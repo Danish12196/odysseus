@@ -143,10 +143,12 @@ async def test_scheduler_approval_pause_closes_gated_stream_in_its_own_context(m
     monkeypatch.setattr('src.agent_loop.stream_agent_loop', paused_loop)
     monkeypatch.setattr('src.task_endpoint.resolve_task_candidates', lambda **kwargs: [])
 
-    result = await TaskScheduler(session_manager=None)._run_agent_loop(
-        'http://ep/v1', 'model', _task(), 's')
+    from src.deferred_approvals import TaskParked
+    with pytest.raises(TaskParked) as caught:
+        await TaskScheduler(session_manager=None)._run_agent_loop(
+            'http://ep/v1', 'model', _task(), 's')
 
-    assert 'paused safely' in result
+    assert 'paused safely' in str(caught.value)
     # Closed during the pause, while its own journal was still bound.
     assert closed == [True]
     assert current_journal() is None

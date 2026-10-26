@@ -16,6 +16,8 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 
 def _make_task(prompt="run the digest"):
     return SimpleNamespace(
@@ -102,16 +104,18 @@ async def test_scheduler_retires_unattended_exact_approval(monkeypatch):
         "src.task_endpoint.resolve_task_candidates",
         lambda **kwargs: [],
     )
-    result = await TaskScheduler(session_manager=None)._run_agent_loop(
-        "http://ep/v1",
-        "model",
-        _make_task(),
-        "s",
-    )
+    from src.deferred_approvals import TaskParked
+    with pytest.raises(TaskParked) as caught:
+        await TaskScheduler(session_manager=None)._run_agent_loop(
+            "http://ep/v1",
+            "model",
+            _make_task(),
+            "s",
+        )
 
-    assert "paused safely" in result
-    assert "That action was not executed" in result
-    assert tool_approval_store.peek(pending.approval_id) is None
+    assert "Nothing was executed" in str(caught.value)
+    # The one-time grant stays until the owner approves or it expires.
+    assert tool_approval_store.peek(pending.approval_id) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +152,39 @@ async def test_scheduler_fallback_path(monkeypatch):
     assert "## Current date and time" in msgs[1]["content"]
     assert msgs[2]["role"] == "user"
     assert msgs[2]["content"] == "send the digest"
+
+
+async def test_parked_approval_does_not_fall_back_to_simple_call(monkeypatch):
+    """TaskParked must leave the scheduler so the run stays parked.
+
+    Treating it as a failed agent loop used to answer the task with a plain
+    model call and mark the schedule completed while the approval was still open.
+    """
+    _patch_scheduler_deps(monkeypatch)
+    from src.deferred_approvals import TaskParked
+
+    called = {"n": 0}
+
+    async def _park(*args, **kwargs):
+        raise TaskParked(
+            "Waiting for approval before bash can run. Nothing was executed.",
+            "approval-1",
+            hold=True,
+        )
+
+    async def _capture_call(messages, **kw):
+        called["n"] += 1
+        return "should-not-run"
+
+    import src.task_endpoint as _te
+    monkeypatch.setattr(_te, "task_llm_call_async", _capture_call)
+
+    from src.task_scheduler import TaskScheduler
+    sched = TaskScheduler(session_manager=None)
+    sched._run_agent_loop = _park
+    with pytest.raises(TaskParked, match="Nothing was executed"):
+        await sched._execute_llm_task(_make_task(prompt="Run bash. NEED_BASH"), db=None)
+    assert called["n"] == 0
 
 
 # ---------------------------------------------------------------------------

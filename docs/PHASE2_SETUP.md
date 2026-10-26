@@ -17,12 +17,14 @@ From the directory that has `docker-compose.yml` and `./data`:
 docker compose stop odysseus
 ```
 
-Point the checkout at this branch. Leave `./data` where it is. Add the variables in the next sections to the `.env` file next to Compose (create it if you do not have one). Then rebuild and start:
+Point the checkout at this branch. Leave `./data` where it is. Add the variables in the next sections to the `.env` file next to Compose (create it if you do not have one). Compose uses `ghcr.io/odysseus-dev/odysseus:latest` whenever `ODYSSEUS_IMAGE` is unset or empty, so set it to the local tag on both the build and every start:
 
 ```bash
 ODYSSEUS_IMAGE=odysseus:fork docker compose build odysseus
 ODYSSEUS_IMAGE=odysseus:fork docker compose up -d
 ```
+
+Keep that same value for later `up -d` commands, including the optional profile commands below. An empty value pulls the upstream image and you will not get this fork.
 
 `docker compose up` does not start the Microsoft Graph container or LiteLLM. Those are separate profiles, below.
 
@@ -159,7 +161,7 @@ ESCALATION_MODEL_BASE_URL=http://litellm:4000/v1
 ESCALATION_MODEL_NAME=grok
 ESCALATION_MODEL_API_KEY=choose-a-local-secret
 
-docker compose --profile litellm up -d
+ODYSSEUS_IMAGE=odysseus:fork docker compose --profile litellm up -d
 ```
 
 The sample config is `config/litellm/config.yaml` (`grok`, `claude`, `gpt`). Compose pins `ghcr.io/berriai/litellm:main-latest` to a digest so a later pull does not change the bits. Do not put LiteLLM on the public internet with an empty master key.
@@ -268,7 +270,7 @@ MS365_MCP_URL=http://ms365-mcp:3000/mcp
 MS365_MCP_PUBLIC_URL=http://127.0.0.1:3339
 OAUTH_REDIRECT_BASE_URL=http://localhost:7011
 
-docker compose --profile ms365 up -d
+ODYSSEUS_IMAGE=odysseus:fork docker compose --profile ms365 up -d
 ```
 
 `outlook` is the small preset: mail, calendar, and contacts, plus tool discovery so a 9B model is not given the full Graph catalog. Odysseus also hides tools when the server still advertises more than `MS365_MCP_MAX_TOOLS` (default 24). What remains is list/get/search/read/download, drafts, and the discovery helpers.

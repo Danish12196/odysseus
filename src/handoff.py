@@ -148,7 +148,11 @@ async def execute_handoff(scheduler, job: dict) -> None:
         notifications_enabled=False,
     )
     try:
-        result = await scheduler._run_agent_loop(endpoint, model, task, session_id)
+        from src.foreground_policy import policy_scope
+        # The owner asked to hand this off so they could keep using the chat.
+        # A heartbeat must not park the model call the way a yielded routine would.
+        with policy_scope("run"):
+            result = await scheduler._run_agent_loop(endpoint, model, task, session_id)
     except Exception as exc:
         logger.exception("Background handoff %s failed", job["id"])
         from src.job_queue import retry_later

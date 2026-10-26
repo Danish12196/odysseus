@@ -2,7 +2,7 @@
 
 A bare or ``:latest`` reference changes underneath an existing install on the
 next ``docker compose pull``/``up``, so two hosts on the same commit can run
-different ChromaDB or ntfy builds. The ``odysseus`` service is excluded: it is
+different ChromaDB or ntfy builds. The ``odysseus`` and ``background-worker`` services are excluded: they are
 the project's own image, selected through ``ODYSSEUS_IMAGE``. The standalone
 GPU files are held equal to these services by test_gpu_compose_standalone.py.
 """

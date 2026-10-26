@@ -19,7 +19,7 @@ from src.agent_runtime.resources import (
 )
 from src.tool_policy import ToolPolicy, build_effective_tool_policy
 from src.turn_contract import (
-    FAMILY_TOOLS, canonical_tool, requested_capabilities,
+    FAMILY_TOOLS, canonical_tool, explicit_background_handoff, requested_capabilities,
     RequiredReadOperation, required_read_operation_for_request, selected_tools_for_request,
 )
 
@@ -383,6 +383,12 @@ def create_request_authority(request_text, *, owner=None, session_id=None, works
         tools = {canonical_tool(operation.tool)}
     else:
         operation = None
+    # The grant is the handoff tool only. The queued task is later capped by
+    # intersecting this same authority, so the request still cannot grow a
+    # shell or other family the user did not ask for. A sealed read must not
+    # drop this explicit second operation.
+    if explicit_background_handoff(request_text):
+        tools.add("handoff_background")
     grants = []
     for name in sorted(tools | {"ask_user", "update_plan"}):
         name = canonical_tool(name)
@@ -516,10 +522,38 @@ def task_operation(task_type, action, prompt):
     return None
 
 
+def _with_launch_scope(authority):
+    """Give a granted bash/python task the agent workspace launch boundary.
+
+    A direct task often has no chat workspace, so construction seals no launch
+    scope. Approval resume then refuses the command. A model-created task still
+    loses any scope its parent does not already have.
+    """
+    from src.agent_runtime.process_resources import LAUNCH_TOOLS, seal_launch_scope
+    from src.agent_runtime.resources import FilesystemRoot, NativeBackendResource
+    if authority.launch_scopes or not any(g.tool in LAUNCH_TOOLS for g in authority.grants):
+        return authority
+    try:
+        from src.tool_execution import default_agent_workspace
+        root = authority.resource_roots[0] if authority.resource_roots else FilesystemRoot.seal(
+            default_agent_workspace(), owner=authority.owner)
+        scopes = tuple(
+            seal_launch_scope(backend, root)
+            for backend in authority.backend_resources
+            if isinstance(backend, NativeBackendResource) and backend.tool_id in LAUNCH_TOOLS
+        )
+    except (OSError, ValueError, RuntimeError, TypeError):
+        return authority
+    if not scopes:
+        return authority
+    return replace(authority, launch_scopes=scopes)
+
+
 def seal_task_authority(prompt, task_type, action, *, owner=None, parent_authority=MISSING_AUTHORITY):
     """Only direct ingress grants; a model-created task is capped by its parent."""
     operation = task_operation(task_type, action, prompt)
     authority = create_request_authority(str(prompt or ""), owner=owner)
+    authority = _with_launch_scope(authority)
     if operation is not None:
         authority = replace(authority, grants=(OperationGrant(operation.tool,
             inputs=frozenset({operation.input})),))
