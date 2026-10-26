@@ -13,7 +13,7 @@ ToolBlock = namedtuple("ToolBlock", ["tool_type", "content"])
 TOOL_TAGS = {
     "bash", "host_shell", "python", "web_search", "web_fetch", "get_weather", "pdf_extract", "youtube_tool", "private_browser", "inspect_media", "extract_text", "transcribe_media", "read_file", "write_file", "edit_file",
     "apply_patch", "todowrite",
-    "grep", "glob", "ls", "get_workspace", "manage_bg_jobs",
+    "grep", "glob", "ls", "get_workspace", "manage_bg_jobs", "handoff_background",
     "create_document", "update_document", "edit_document",
     "search_chats",
     "chat_with_model", "create_session", "list_sessions",

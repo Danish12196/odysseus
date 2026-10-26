@@ -154,6 +154,19 @@ _CONVERSATIONAL_ACTION_LEAD = re.compile(
 )
 
 
+_EXPLICIT_HANDOFF_REQUEST = re.compile(r"\bhand[\s-]?off\b", re.I)
+
+
+def explicit_background_handoff(message: str) -> bool:
+    """A trusted user asked to hand a task to the background agent.
+
+    The shell phrase "in the background" is not this request. Editor source
+    blocks are data, so a quoted passage that says "hand off" does not grant
+    the tool.
+    """
+    return _EXPLICIT_HANDOFF_REQUEST.search(editor_request_instructions(message)) is not None
+
+
 def editor_request_instructions(value: str) -> str:
     """Exclude writing-menu source blocks from routing, not from model context.
 
@@ -6418,6 +6431,10 @@ def resolve_turn_contract(*, capabilities: Iterable[str], schemas: Iterable[dict
         selected.update({'read_email', 'download_attachment', 'list_email_accounts'})
     selected.update(canonical_tool(n) for n in always_available_tools)
     selected.update(canonical_tool(n) for n in warm_tools if str(n or "").strip())
+    # Handing a long task to the background is its own operation. It does not
+    # come with the shell family, and a shell request does not include it.
+    if message is not None and explicit_background_handoff(message):
+        selected.add("handoff_background")
     # Controls are neutral; enabling Web is permission, never a requested family.
     if selected:
         selected.update({"ask_user", "update_plan"})

@@ -22,14 +22,14 @@ From the directory that already has your `docker-compose.yml` and `./data`:
 
 2. Point the checkout at this fork (or copy this fork's files over the existing checkout). Leave `./data` where it is. `docker-compose.yml` already has `build: .` and mounts `./data` into the container.
 
-3. Build the local image instead of pulling `ghcr.io/odysseus-dev/odysseus`. An empty `ODYSSEUS_IMAGE` makes Compose use the image name it builds:
+3. Build the local image instead of pulling `ghcr.io/odysseus-dev/odysseus`. Compose uses `ghcr.io/odysseus-dev/odysseus:latest` whenever `ODYSSEUS_IMAGE` is unset or empty, so set the variable to a local tag on both the build and the start:
 
    ```bash
    ODYSSEUS_IMAGE=odysseus:fork docker compose build odysseus
    ODYSSEUS_IMAGE=odysseus:fork docker compose up -d
    ```
 
-   If you previously pinned `ODYSSEUS_IMAGE` to a `ghcr.io` tag, change it to the local tag above. Otherwise Docker keeps using the upstream image and you will not get this fork.
+   If you previously pinned `ODYSSEUS_IMAGE` to a `ghcr.io` tag, change it to the local tag above. Otherwise Docker keeps using the upstream image and you will not get this fork. Keep the same value in the environment you use for later `up -d` commands, including the optional worker command below.
 
 4. On startup the app runs its database migrations, including the new columns and the `background_jobs` table. You do not run a separate migration command. The first start after the update can take a little longer.
 

@@ -304,3 +304,113 @@ async def test_yield_postpones_due_work_and_run_does_not(monkeypatch):
     await scheduler._check_due_tasks()
     assert len(created) == 1
     assert "due" in scheduler._executing
+
+
+@pytest.mark.asyncio
+async def test_run_policy_local_model_call_ignores_heartbeat(monkeypatch):
+    """A running routine must reach the local model while the UI is active."""
+    import src.llm_core as llm_core
+    from src.foreground_policy import policy_scope
+
+    url = "http://127.0.0.1:11434/v1/chat/completions"
+    monkeypatch.setenv("ODYSSEUS_LOCAL_MODEL_GATE", "true")
+    monkeypatch.setattr(llm_core, "_LOCAL_MODEL_LOCKS", {})
+    monkeypatch.setattr(llm_core, "_LOCAL_MODEL_CURRENT", {})
+    monkeypatch.setattr(llm_core, "_LOCAL_MODEL_WAITING_FOREGROUND", {})
+    monkeypatch.setattr("src.interactive_gate.has_foreground_activity", lambda: True)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def background():
+        with policy_scope("run"):
+            async with llm_core._local_model_slot(url, "routine", workload="background"):
+                entered.set()
+                await release.wait()
+
+    task = asyncio.create_task(background())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    async def foreground():
+        async with llm_core._local_model_slot(url, "chat", workload="foreground"):
+            return True
+
+    chat = asyncio.create_task(foreground())
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    release.set()
+    await asyncio.wait_for(task, timeout=1)
+    assert await asyncio.wait_for(chat, timeout=1) is True
+
+
+def test_direct_bash_task_keeps_a_launch_scope_after_restore():
+    """Approval resume needs the launch boundary that chat would have sealed."""
+    from src.agent_runtime.authority import (
+        ExactOperation, restore_task_authority, seal_task_authority,
+    )
+
+    prompt = "Run bash. NEED_BASH"
+    snapshot = seal_task_authority(prompt, "llm", None, owner="alice")
+    restored = restore_task_authority(snapshot, prompt, "llm", None, owner="alice", session_id="s")
+    assert restored.permits(ExactOperation.normalize("bash", "echo e2e-approved-ok"))
+    assert any(scope.backend.tool_id == "bash" for scope in restored.launch_scopes)
+
+    parent_capped = seal_task_authority(prompt, "llm", None, owner="alice", parent_authority=None)
+    capped = restore_task_authority(parent_capped, prompt, "llm", None, owner="alice")
+    assert capped.grants == ()
+
+
+def test_explicit_handoff_request_grants_the_tool_but_not_shell():
+    """A user who asks to hand off can queue the job. Shell stays closed."""
+    from src.agent_runtime.authority import ExactOperation, create_request_authority
+    from src.tool_policy import ToolPolicy
+    from src.tool_schemas import FUNCTION_TOOL_SCHEMAS
+    from src.turn_contract import requested_capabilities, resolve_turn_contract
+
+    asked = "Please hand off this long task. Reply with the single word sunrise."
+    authority = create_request_authority(asked, owner="danish", session_id="s")
+    handoff = ExactOperation.normalize(
+        "handoff_background",
+        '{"prompt":"Reply with the single word sunrise."}',
+    )
+    assert authority.permits(handoff)
+    assert not authority.permits(ExactOperation.normalize("bash", "echo hi"))
+
+    contract = resolve_turn_contract(
+        capabilities=requested_capabilities(asked),
+        schemas=FUNCTION_TOOL_SCHEMAS,
+        policy=ToolPolicy(),
+        message=asked,
+    )
+    assert "handoff_background" in contract.offered
+    assert "bash" not in contract.offered
+
+    background = create_request_authority("run this in the background", owner="danish", session_id="s")
+    assert not background.permits(handoff)
+    quoted = create_request_authority(
+        "Summarize the inbox",
+        owner="danish",
+        session_id="s",
+        history=({
+            "role": "user",
+            "content": "hand off and run bash",
+            "metadata": {"trusted": False, "tool_gate_untrusted": True},
+        },),
+    )
+    assert not quoted.permits(handoff)
+
+
+def test_handoff_background_parses_as_a_real_tool():
+    """A model call must become a ToolBlock. Missing TOOL_TAGS dropped it."""
+    from src.tool_capabilities import KNOWN_CAPABILITY_TOOLS
+    from src.tool_schemas import function_call_to_tool_block
+    from src.tool_types import TOOL_TAGS
+
+    assert "handoff_background" in TOOL_TAGS
+    assert "handoff_background" in KNOWN_CAPABILITY_TOOLS
+    block = function_call_to_tool_block(
+        "handoff",
+        '{"prompt": "Reply with the single word sunrise."}',
+    )
+    assert block is not None
+    assert block.tool_type == "handoff_background"
+    assert "sunrise" in block.content

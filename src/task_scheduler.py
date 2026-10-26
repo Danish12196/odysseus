@@ -1835,6 +1835,12 @@ class TaskScheduler:
                 datetime_context_msg=_dt_msg,
             )
         except Exception as e:
+            # A parked approval is a hold, not a failed loop. Falling through
+            # to the simple call would mark the task completed and answer
+            # without the sealed tool the owner still has to approve.
+            from src.deferred_approvals import TaskParked
+            if isinstance(e, TaskParked):
+                raise
             logger.warning(f"Agent loop failed for task '{task.name}', falling back to simple call: {e}")
             from src.task_endpoint import task_llm_call_async
             messages: list = [{"role": "system", "content": system_prompt}]

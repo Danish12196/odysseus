@@ -140,7 +140,7 @@ _register(
     result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
 )
 _register(
-    {"bash", "host_shell", "manage_bg_jobs", "python"},
+    {"bash", "host_shell", "manage_bg_jobs", "handoff_background", "python"},
     ToolEffect.EXECUTE_CODE,
     result_integrity=ResultIntegrity.WORKSPACE_UNTRUSTED,
 )
