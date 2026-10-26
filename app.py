@@ -1104,12 +1104,28 @@ async def runtime_info() -> Dict[str, object]:
         "git": bool(commands["git"]),
         "dockerClient": bool(commands["docker"]),
     }
+    try:
+        from src.work_routing import public_status
+        work_routing = public_status()
+    except Exception:
+        work_routing = {"active": False}
+    try:
+        from src.microsoft_mcp import configured_servers
+        from src.microsoft_oauth import configured as microsoft_oauth_configured
+        microsoft = {
+            "oauth_configured": microsoft_oauth_configured(),
+            "mcp_servers": [server_id for server_id, _url in configured_servers()],
+        }
+    except Exception:
+        microsoft = {"oauth_configured": False, "mcp_servers": []}
     return {
         "in_docker": in_docker,
         "ollama_base_url": ollama_url,
         "container": container,
         "commands": commands,
         "capabilities": capabilities,
+        "work_routing": work_routing,
+        "microsoft": microsoft,
     }
 
 
@@ -1188,6 +1204,17 @@ async def _startup_event():
         logger.warning("Failed to start background-job monitor: %s", _e)
     # MCP servers can be slow or blocked by local tooling. Connect them after
     # the web server is accepting traffic instead of delaying the whole UI.
+    try:
+        from src.work_routing import sync_env_endpoints
+        sync_env_endpoints()
+    except Exception as exc:
+        logger.warning("Work-routing endpoint sync skipped: %s", exc)
+    try:
+        from src.microsoft_mcp import sync_mcp_servers
+        sync_mcp_servers()
+    except Exception as exc:
+        logger.warning("Microsoft MCP registration skipped: %s", exc)
+
     async def _startup_mcp_connections():
         try:
             from src.builtin_mcp import register_builtin_servers

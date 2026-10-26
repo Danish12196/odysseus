@@ -129,3 +129,7 @@ Other settings:
 5. Ask the assistant to hand a long task to the background (`handoff_background`). The reply should include a job id, and the result should appear in that same chat when it finishes, including after a restart if it had not finished yet.
 6. For mail: the first time a mailbox is seen, existing messages are only remembered. A later poll that sees a new inbox message fires `email_received` with subject, sender, and id. A task prompt can use `{{event.subject}}` and `{{event.from}}`. Those fields are data, not instructions.
 7. A background task that wants to act on untrusted mail or web content parks and notifies you. Nothing from that step runs until you approve it. After a restart the parked action expires and does not run, because the one-time grant lived only in memory.
+
+## E. Phase 2: model routing and Outlook
+
+Phase 2 is documented in [PHASE2_SETUP.md](PHASE2_SETUP.md). It adds a local-first model route (a 9B model for easy work, an API model when the work is hard or the local call fails) and Outlook / Microsoft 365 mail, calendar, and contacts. Apply it on top of this branch. The same `./data` folder stays in place.

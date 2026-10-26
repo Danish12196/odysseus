@@ -2008,7 +2008,7 @@ async function initReminderSettings() {
   const smtpAccountReady = (account) => !!(
     account.smtp_host
     && account.smtp_user
-    && (account.has_smtp_password || account.oauth_provider === 'google')
+    && (account.has_smtp_password || account.oauth_provider === 'google' || account.oauth_provider === 'microsoft')
   );
   try {
     const res = await fetch('/api/email/accounts', { credentials: 'same-origin' });
@@ -2518,7 +2518,7 @@ async function initEmailAccountsSettings() {
       google_workspace:  { label: 'Google Workspace / .edu',   imap: { host: 'imap.gmail.com',        port: 993, starttls: false }, smtp: { host: 'smtp.gmail.com',        port: 587 }, oauth: 'google' },
       migadu:            { label: 'Migadu',                     imap: { host: 'imap.migadu.com',       port: 993, starttls: false }, smtp: { host: 'smtp.migadu.com',       port: 465 } },
       icloud:            { label: 'iCloud',                     imap: { host: 'imap.mail.me.com',      port: 993, starttls: false }, smtp: { host: 'smtp.mail.me.com',      port: 587 } },
-      outlook:           { label: 'Outlook / Office 365',       imap: { host: 'outlook.office365.com', port: 993, starttls: false }, smtp: { host: 'smtp.office365.com',    port: 587 } },
+      outlook:           { label: 'Outlook / Office 365',       imap: { host: 'outlook.office365.com', port: 993, starttls: false }, smtp: { host: 'smtp.office365.com',    port: 587, security: 'starttls' }, oauth: 'microsoft' },
       fastmail:          { label: 'Fastmail',                   imap: { host: 'imap.fastmail.com',     port: 993, starttls: false }, smtp: { host: 'smtp.fastmail.com',     port: 465 } },
       yahoo:             { label: 'Yahoo',                      imap: { host: 'imap.mail.yahoo.com',   port: 993, starttls: false }, smtp: { host: 'smtp.mail.yahoo.com',   port: 465 } },
       dovecot:           { label: 'Dovecot IMAP (no SMTP)',     imap: { host: '',                      port: 31143, starttls: false }, smtp: { host: '',                     port: 465 } },
@@ -2536,9 +2536,18 @@ async function initEmailAccountsSettings() {
         <div class="settings-row"><label class="settings-label">Email${_hint('Your email address. Used as the From: header on outgoing mail and as the display label when Name is blank.')}</label><input id="eaf-from" class="settings-input" placeholder="you@example.com" value="${esc(a.from_address || '')}"></div>
         <div class="settings-row"><label class="settings-label">Display Name${_hint('Your name as it appears in the From: field of emails you send, e.g. Jane Smith. Auto-filled from Google during OAuth.')}</label><input id="eaf-display-name" class="settings-input" placeholder="Your Name" value="${esc(a.display_name || '')}"></div>
         <div id="eaf-oauth-section" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:6px;background:color-mix(in srgb,var(--accent,#50fa7b) 6%,transparent)">
-          <div style="font-size:11px;font-weight:600;margin-bottom:6px">Google OAuth2 — required for Workspace / .edu accounts</div>
-          <div id="eaf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px">${a.oauth_provider === 'google' ? '✓ Connected via Google OAuth' : 'Not connected — click below to authorize'}</div>
-          <button type="button" id="eaf-oauth-btn" class="admin-btn-add" style="font-size:11px">${a.oauth_provider === 'google' ? 'Reconnect with Google' : 'Connect with Google'}</button>
+          <div id="eaf-oauth-title" style="font-size:11px;font-weight:600;margin-bottom:6px"></div>
+          <div id="eaf-ms-tenant-row" style="display:none;margin-bottom:6px">
+            <label class="settings-label" style="font-size:11px">Microsoft account type</label>
+            <select id="eaf-ms-tenant" class="settings-select">
+              <option value="organizations">Work or school</option>
+              <option value="consumers">Personal Outlook.com</option>
+              <option value="common">Personal and work (only if the app allows both)</option>
+            </select>
+            <input id="eaf-ms-tenant-id" class="settings-input" placeholder="Or paste your work tenant id" style="margin-top:4px">
+          </div>
+          <div id="eaf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px"></div>
+          <button type="button" id="eaf-oauth-btn" class="admin-btn-add" style="font-size:11px"></button>
         </div>
         <div style="font-size:11px;font-weight:600;opacity:0.6;margin:6px 0 2px">IMAP (Receiving)</div>
         <div class="settings-row"><label class="settings-label">Host${_hint('Your IMAP server, e.g. imap.gmail.com, imap.migadu.com, a LAN host, or a Tailscale IP for Dovecot.')}</label><input id="eaf-imap-host" class="settings-input" value="${esc(a.imap_host || '')}"></div>
@@ -2570,17 +2579,37 @@ async function initEmailAccountsSettings() {
     // Show/hide OAuth section and password fields based on provider selection.
     function _syncOauthUI(providerKey) {
       const p = PROVIDERS[providerKey];
-      const isOauth = !!(p && p.oauth);
-      el('eaf-oauth-section').style.display = isOauth ? '' : 'none';
+      const kind = (p && p.oauth) || '';
+      el('eaf-oauth-section').style.display = kind ? '' : 'none';
       formEl.querySelectorAll('.eaf-password-section').forEach(r => {
-        r.style.display = isOauth ? 'none' : '';
+        r.style.display = kind ? 'none' : '';
       });
+      const tenantRow = el('eaf-ms-tenant-row');
+      if (tenantRow) tenantRow.style.display = kind === 'microsoft' ? '' : 'none';
+      const connected = !!(kind && a.oauth_provider === kind);
+      const title = el('eaf-oauth-title');
+      if (title) {
+        title.textContent = kind === 'microsoft'
+          ? 'Microsoft sign-in — Outlook and Microsoft 365'
+          : 'Google OAuth2 — required for Workspace / .edu accounts';
+      }
+      const status = el('eaf-oauth-status');
+      if (status) {
+        status.textContent = connected
+          ? (kind === 'microsoft' ? '✓ Connected via Microsoft' : '✓ Connected via Google OAuth')
+          : 'Not connected — click below to authorize';
+      }
+      const btn = el('eaf-oauth-btn');
+      if (btn) {
+        const vendor = kind === 'microsoft' ? 'Microsoft' : 'Google';
+        btn.textContent = connected ? `Reconnect with ${vendor}` : `Connect with ${vendor}`;
+      }
     }
 
     const eafProviderNotes = {
       outlook: {
-        title: 'Outlook / Office 365 needs OAuth',
-        body: 'Microsoft disables normal password login for IMAP/SMTP in most Outlook and Microsoft 365 accounts. Odysseus does not support Microsoft OAuth/Graph mail yet, so this preset is only a placeholder for future support.',
+        title: 'Outlook / Microsoft 365 uses Microsoft sign-in',
+        body: 'A mailbox password will not work. Choose Work or school (or paste your tenant id), then Connect with Microsoft. Personal Outlook.com uses Personal. Sends still wait for your approval. If the work sign-in page says an admin must approve the app, stop there and use the admin-consent steps in the Phase 2 setup notes.',
       },
     };
     const eafNoteEl = el('eaf-provider-note');
@@ -2612,9 +2641,10 @@ async function initEmailAccountsSettings() {
     });
 
     // Init OAuth UI for accounts already connected via OAuth.
-    if (a.oauth_provider === 'google') _syncOauthUI('google_workspace');
+    if (a.oauth_provider === 'microsoft') _syncOauthUI('outlook');
+    else if (a.oauth_provider === 'google') _syncOauthUI('google_workspace');
 
-    // "Connect with Google" button — save the account first, then redirect to OAuth.
+    // Save the account first, then redirect to Google or Microsoft sign-in.
     el('eaf-oauth-btn').addEventListener('click', async () => {
       // Must save the account first to get an account_id to pass to the OAuth flow.
       const body = {
@@ -2637,6 +2667,13 @@ async function initEmailAccountsSettings() {
       const d = await r.json();
       if (!d.ok) { el('eaf-msg').textContent = d.error || 'Save failed'; el('eaf-msg').style.color = 'var(--red)'; return; }
       const accId = isEdit ? a.id : d.id;
+      const kind = (PROVIDERS[el('eaf-provider').value] || {}).oauth || 'google';
+      if (kind === 'microsoft') {
+        const typed = (el('eaf-ms-tenant-id').value || '').trim();
+        const tenant = typed || (el('eaf-ms-tenant').value || 'organizations');
+        window.location.href = `/api/email/oauth/microsoft/authorize?account_id=${encodeURIComponent(accId)}&tenant=${encodeURIComponent(tenant)}`;
+        return;
+      }
       window.location.href = `/api/email/oauth/google/authorize?account_id=${encodeURIComponent(accId)}`;
     });
     el('eaf-smtp-security').value = _smtpSecurity(a);
@@ -3998,7 +4035,7 @@ async function initUnifiedIntegrations() {
       google_workspace: { label: 'Google Workspace / .edu', emailEx: 'you@yourschool.edu', imap: { host: 'imap.gmail.com', port: 993, starttls: false }, smtp: { host: 'smtp.gmail.com', port: 587 }, oauth: 'google' },
       migadu:   { label: 'Migadu',                  emailEx: 'you@yourdomain.com', imap: { host: 'imap.migadu.com',          port: 993, starttls: false }, smtp: { host: 'smtp.migadu.com',    port: 465 } },
       icloud:   { label: 'iCloud',                  emailEx: 'you@icloud.com',    imap: { host: 'imap.mail.me.com',         port: 993, starttls: false }, smtp: { host: 'smtp.mail.me.com',   port: 587 } },
-      outlook:  { label: 'Outlook / Office 365',    emailEx: 'you@outlook.com',   imap: { host: 'outlook.office365.com',    port: 993, starttls: false }, smtp: { host: 'smtp.office365.com', port: 587 } },
+      outlook:  { label: 'Outlook / Office 365',    emailEx: 'you@outlook.com',   imap: { host: 'outlook.office365.com',    port: 993, starttls: false }, smtp: { host: 'smtp.office365.com', port: 587, security: 'starttls' }, oauth: 'microsoft' },
       fastmail: { label: 'Fastmail',                emailEx: 'you@fastmail.com',  imap: { host: 'imap.fastmail.com',        port: 993, starttls: false }, smtp: { host: 'smtp.fastmail.com',  port: 465 } },
       yahoo:    { label: 'Yahoo',                   emailEx: 'you@yahoo.com',     imap: { host: 'imap.mail.yahoo.com',      port: 993, starttls: false }, smtp: { host: 'smtp.mail.yahoo.com', port: 465 } },
       dovecot:  { label: 'Dovecot IMAP (no SMTP)',  emailEx: 'you@example.com',   imap: { host: '',                         port: 31143, starttls: false }, smtp: { host: '',                   port: 465 } },
@@ -4044,9 +4081,18 @@ async function initUnifiedIntegrations() {
           <div class="settings-row"><label class="settings-label">Email${_hint('Your email address. Used as the From: header on outgoing mail and as the display label when Name is blank.')}</label><input id="uf-email-from" class="settings-input" placeholder="you@example.com"></div>
           <div class="settings-row"><label class="settings-label">Display Name${_hint('Your name as it appears in the From: field of emails you send, e.g. Jane Smith. Auto-filled from Google during OAuth.')}</label><input id="uf-display-name" class="settings-input" placeholder="Your Name"></div>
           <div id="uf-oauth-section" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:6px;background:color-mix(in srgb,var(--accent,#50fa7b) 6%,transparent)">
-            <div style="font-size:11px;font-weight:600;margin-bottom:6px">Google OAuth2 — required for Workspace / .edu accounts</div>
-            <div id="uf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px">${existing && existing.oauth_provider === 'google' ? '✓ Connected via Google OAuth' : 'Not connected — click below to authorize'}</div>
-            <button type="button" id="uf-oauth-btn" class="admin-btn-add" style="font-size:11px">${existing && existing.oauth_provider === 'google' ? 'Reconnect with Google' : 'Connect with Google'}</button>
+            <div id="uf-oauth-title" style="font-size:11px;font-weight:600;margin-bottom:6px"></div>
+            <div id="uf-ms-tenant-row" style="display:none;margin-bottom:6px">
+              <label class="settings-label" style="font-size:11px">Microsoft account type</label>
+              <select id="uf-ms-tenant" class="settings-select">
+                <option value="organizations">Work or school</option>
+                <option value="consumers">Personal Outlook.com</option>
+                <option value="common">Personal and work (only if the app allows both)</option>
+              </select>
+              <input id="uf-ms-tenant-id" class="settings-input" placeholder="Or paste your work tenant id" style="margin-top:4px">
+            </div>
+            <div id="uf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px"></div>
+            <button type="button" id="uf-oauth-btn" class="admin-btn-add" style="font-size:11px"></button>
           </div>
           <div style="font-size:11px;font-weight:600;opacity:0.6;margin:4px 0 2px;display:flex;align-items:center;gap:5px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent, var(--red));flex-shrink:0;" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>IMAP (Receiving)</div>
           <div class="settings-row"><label class="settings-label">Host${_hint('Your IMAP server, e.g. imap.gmail.com, imap.migadu.com, a LAN host, or a Tailscale IP for Dovecot.')}</label><input id="uf-imap-host" class="settings-input" placeholder="imap.example.com"></div>
@@ -4106,10 +4152,10 @@ async function initUnifiedIntegrations() {
         url: 'https://login.yahoo.com/account/security/app-passwords',
       },
       outlook: {
-        title: 'Outlook / Office 365 needs OAuth',
-        body: 'Microsoft disables normal password login for IMAP/SMTP in most Outlook and Microsoft 365 accounts. Odysseus does not support Microsoft OAuth/Graph mail yet, so this preset is only a placeholder for future support.',
-        url: 'https://learn.microsoft.com/exchange/clients-and-mobile-in-exchange-online/disable-basic-authentication-in-exchange-online',
-        linkLabel: 'Read Microsoft note',
+        title: 'Outlook / Microsoft 365 uses Microsoft sign-in',
+        body: 'A mailbox password will not work. Choose Work or school (or paste your tenant id), then Connect with Microsoft. Personal Outlook.com uses Personal. Sends still wait for your approval. If the work sign-in page says an admin must approve the app, use the admin-consent steps in the Phase 2 setup notes.',
+        url: 'https://learn.microsoft.com/entra/identity/enterprise-apps/grant-admin-consent',
+        linkLabel: 'If work sign-in is blocked',
       },
     };
     const noteEl = el('uf-email-provider-note');
@@ -4180,11 +4226,31 @@ async function initUnifiedIntegrations() {
     // Show/hide the OAuth section and password fields based on provider selection.
     function _syncOauthUI(providerKey) {
       const p = PROVIDERS[providerKey];
-      const isOauth = !!(p && p.oauth);
-      el('uf-oauth-section').style.display = isOauth ? '' : 'none';
+      const kind = (p && p.oauth) || '';
+      el('uf-oauth-section').style.display = kind ? '' : 'none';
       formEl.querySelectorAll('.uf-password-section').forEach(r => {
-        r.style.display = isOauth ? 'none' : '';
+        r.style.display = kind ? 'none' : '';
       });
+      const tenantRow = el('uf-ms-tenant-row');
+      if (tenantRow) tenantRow.style.display = kind === 'microsoft' ? '' : 'none';
+      const connected = !!(kind && existing && existing.oauth_provider === kind);
+      const title = el('uf-oauth-title');
+      if (title) {
+        title.textContent = kind === 'microsoft'
+          ? 'Microsoft sign-in — Outlook and Microsoft 365'
+          : 'Google OAuth2 — required for Workspace / .edu accounts';
+      }
+      const status = el('uf-oauth-status');
+      if (status) {
+        status.textContent = connected
+          ? (kind === 'microsoft' ? '✓ Connected via Microsoft' : '✓ Connected via Google OAuth')
+          : 'Not connected — click below to authorize';
+      }
+      const btn = el('uf-oauth-btn');
+      if (btn) {
+        const vendor = kind === 'microsoft' ? 'Microsoft' : 'Google';
+        btn.textContent = connected ? `Reconnect with ${vendor}` : `Connect with ${vendor}`;
+      }
     }
 
     // Custom dropdown wire-up — the native <select> stays in the DOM as the
@@ -4262,9 +4328,10 @@ async function initUnifiedIntegrations() {
     });
 
     // Init OAuth UI for accounts already connected via OAuth.
-    if (existing && existing.oauth_provider === 'google') _syncOauthUI('google_workspace');
+    if (existing && existing.oauth_provider === 'microsoft') _syncOauthUI('outlook');
+    else if (existing && existing.oauth_provider === 'google') _syncOauthUI('google_workspace');
 
-    // "Connect with Google" — save the account first, then redirect to OAuth.
+    // Save the account first, then redirect to Google or Microsoft sign-in.
     el('uf-oauth-btn').addEventListener('click', async () => {
       const body = _collectBody();
       if (!body.name) body.name = body.from_address;
@@ -4275,6 +4342,13 @@ async function initUnifiedIntegrations() {
       const d = await r.json();
       if (!(d.ok || d.id)) { el('uf-email-msg').textContent = d.error || 'Save failed'; el('uf-email-msg').style.color = 'var(--red)'; return; }
       const accId = isEdit ? editId : d.id;
+      const kind = (PROVIDERS[el('uf-email-provider').value] || {}).oauth || 'google';
+      if (kind === 'microsoft') {
+        const typed = (el('uf-ms-tenant-id').value || '').trim();
+        const tenant = typed || (el('uf-ms-tenant').value || 'organizations');
+        window.location.href = `/api/email/oauth/microsoft/authorize?account_id=${encodeURIComponent(accId)}&tenant=${encodeURIComponent(tenant)}`;
+        return;
+      }
       window.location.href = `/api/email/oauth/google/authorize?account_id=${encodeURIComponent(accId)}`;
     });
 

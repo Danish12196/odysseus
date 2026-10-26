@@ -145,6 +145,12 @@ _register(
     result_integrity=ResultIntegrity.WORKSPACE_UNTRUSTED,
 )
 _register(
+    {"handoff_background"},
+    ToolEffect.EXECUTE_CODE,
+    ToolEffect.WRITE_PRIVATE,
+    result_integrity=ResultIntegrity.WORKSPACE_UNTRUSTED,
+)
+_register(
     {"apply_patch", "edit_file", "write_file"},
     ToolEffect.WRITE_WORKSPACE,
     # Successful writes include unified diffs that can echo arbitrary existing
@@ -319,6 +325,17 @@ def capabilities_for_tool(tool_name: Any) -> ToolCapabilities:
     capabilities = TOOL_CAPABILITIES.get(tool_name)
     if capabilities is not None:
         return capabilities
+    if tool_name.startswith("mcp__ms365"):
+        bare_name = tool_name.split("__", 2)[-1]
+        try:
+            from src.microsoft_mcp import is_mail_send_tool
+        except Exception:
+            is_mail_send_tool = None
+        if is_mail_send_tool and is_mail_send_tool(bare_name):
+            return _capabilities(
+                ToolEffect.EXTERNAL_SIDE_EFFECT,
+                result_integrity=ResultIntegrity.EXTERNAL_UNTRUSTED,
+            )
     if tool_name.startswith("mcp__email__"):
         bare_name = tool_name[len("mcp__email__"):]
         capabilities = TOOL_CAPABILITIES.get(bare_name)

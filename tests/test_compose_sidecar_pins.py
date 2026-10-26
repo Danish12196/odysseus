@@ -19,7 +19,13 @@ PINNED = re.compile(r"^[\w.\-/]+:(?P<tag>[\w.\-]+)@sha256:[0-9a-f]{64}$")
 
 def _sidecars():
     services = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
-    return {name: svc["image"] for name, svc in services.items() if name != "odysseus"}
+    own_image = services["odysseus"]["image"]
+    # background-worker reuses the Odysseus image. It is not a third-party sidecar.
+    return {
+        name: svc["image"]
+        for name, svc in services.items()
+        if name != "odysseus" and svc.get("image") != own_image
+    }
 
 
 def test_expected_sidecars_present():

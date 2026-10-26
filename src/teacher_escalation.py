@@ -600,15 +600,22 @@ async def run_teacher_inline(
     import json
     from src.settings import get_setting
 
-    # Gates
+    # Gates. A configured teacher_model still wins. When work routing has an
+    # escalation model and auto-escalate is on, that route is the teacher
+    # even if the Settings toggle was never turned on.
     try:
-        if not get_setting("teacher_enabled", False):
-            return
+        settings_enabled = bool(get_setting("teacher_enabled", False))
         teacher_spec = (get_setting("teacher_model", "") or "").strip()
-        if not teacher_spec:
-            return
     except Exception:
-        return
+        settings_enabled = False
+        teacher_spec = ""
+    from src.work_routing import auto_escalate_enabled, escalation_route
+    env_route = escalation_route() if auto_escalate_enabled() else None
+    use_settings = bool(settings_enabled and teacher_spec)
+    if not use_settings:
+        if not env_route:
+            return
+        teacher_spec = env_route.model
 
     # Extract original user request — last user-role message
     user_request = ""
@@ -627,9 +634,16 @@ async def run_teacher_inline(
         break
 
     status, reason = evaluate_turn_regex(student_tool_events, student_reply)
+    if status != "failure" and auto_escalate_enabled():
+        from src.work_routing import complexity_reason
+        complex_reason = complexity_reason(
+            student_messages, student_tool_events, student_endpoint_url,
+        )
+        if complex_reason:
+            status, reason = "failure", complex_reason
     if status != "failure":
         # Tier 2: LLM self-evaluation check requires teacher_tier2_enabled
-        if not get_setting("teacher_tier2_enabled", False):
+        if not use_settings or not get_setting("teacher_tier2_enabled", False):
             return
         status, reason = await evaluate_turn_llm(
             user_request=user_request,
@@ -643,8 +657,11 @@ async def run_teacher_inline(
 
     # Resolve teacher endpoint
     try:
-        from src.ai_interaction import _resolve_model
-        teacher_url, teacher_model, teacher_headers = await asyncio.to_thread(_resolve_model, teacher_spec, owner=owner)
+        if use_settings:
+            from src.ai_interaction import _resolve_model
+            teacher_url, teacher_model, teacher_headers = await asyncio.to_thread(_resolve_model, teacher_spec, owner=owner)
+        else:
+            teacher_url, teacher_model, teacher_headers = env_route.candidate()
     except Exception as e:
         logger.warning(f"teacher endpoint not resolvable ({teacher_spec!r}): {e}")
         yield (

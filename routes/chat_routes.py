@@ -2378,6 +2378,16 @@ def setup_chat_routes(
             policy=foreground_policy,
             selected_endpoint_id=chat_request.selected_endpoint_id or getattr(sess, "endpoint_id", None),
         )
+        try:
+            from src.work_routing import align_foreground
+            foreground_candidates, route_descriptors = align_foreground(
+                foreground_candidates,
+                route_descriptors,
+                [{"role": "user", "content": message}],
+                kind="chat",
+            )
+        except Exception:
+            logger.debug("work routing skipped for chat", exc_info=True)
         candidate_request_factory = None
         selected_context_length = getattr(ctx, "context_length", 0)
         candidate_request_state = {
@@ -4037,6 +4047,16 @@ def setup_chat_routes(
                 policy=_foreground_policy,
                 selected_endpoint_id=selected_endpoint_id or getattr(sess, "endpoint_id", None),
             )
+            try:
+                from src.work_routing import align_foreground
+                _foreground_candidates, _foreground_route_descriptors = align_foreground(
+                    _foreground_candidates,
+                    _foreground_route_descriptors,
+                    messages,
+                    kind="chat",
+                )
+            except Exception:
+                logger.debug("work routing skipped for chat stream", exc_info=True)
             _chat_request_factory = None
             _selected_context_length = getattr(ctx, "context_length", 0)
             _chat_request_state = {
