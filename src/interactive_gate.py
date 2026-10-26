@@ -191,8 +191,21 @@ async def wait_for_interactive_quiet(label: str = "") -> bool:
     if not _enabled():
         return False
 
+    policy = None
+    try:
+        from src.foreground_policy import current_policy, defer_max_wait_seconds
+        policy = current_policy()
+    except Exception:
+        policy = None
+        defer_max_wait_seconds = None
+    if policy == "run":
+        return False
+
     quiet = _quiet_seconds()
-    max_wait = _max_wait_seconds()
+    if policy == "defer" and defer_max_wait_seconds is not None:
+        max_wait = defer_max_wait_seconds()
+    else:
+        max_wait = _max_wait_seconds()
     deadline = time.monotonic() + max_wait if max_wait > 0 else None
     cond = _condition()
     waited = False

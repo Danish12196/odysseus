@@ -178,6 +178,11 @@ async def _drain(session_id: str, run: _Run, agen: AsyncGenerator[str, None],
     finally:
         # Wake every subscriber with the end sentinel so their SSE closes.
         _wake_subscribers()
+        try:
+            from src.job_queue import finish_agent_run
+            finish_agent_run(session_id, run.run_id, run.status)
+        except Exception:
+            logger.debug("Could not checkpoint detached agent run %s", session_id, exc_info=True)
         # Run is terminal — arm the grace timer so it (and its buffer) is
         # eventually freed even if nobody ever reconnects. subscribe() cancels
         # this on connect and re-arms on disconnect.
@@ -205,6 +210,11 @@ def start(session_id: str, agen: AsyncGenerator[str, None]) -> _Run:
             prev.evict_task.cancel()
     run = _Run()
     _RUNS[session_id] = run
+    try:
+        from src.job_queue import record_agent_run
+        record_agent_run(session_id, run.run_id)
+    except Exception:
+        logger.debug("Could not record detached agent run %s", session_id, exc_info=True)
     run.task = asyncio.create_task(_drain(session_id, run, agen, prev_task))
     return run
 

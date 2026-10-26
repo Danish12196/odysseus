@@ -1,5 +1,6 @@
 """CRUD routes for scheduled tasks."""
 
+import asyncio
 import json
 import logging
 import secrets
@@ -166,6 +167,7 @@ class TaskCreate(BaseModel):
     then_task_id: Optional[str] = None            # chain: run this task after success
     notifications_enabled: Optional[bool] = None  # None lets action-specific defaults apply
     character_id: Optional[str] = None             # built-in persona id (PERSONAS) — biases output voice
+    foreground_policy: Optional[str] = None        # run | defer | yield | empty for the global default
 
 
 class TaskUpdate(BaseModel):
@@ -187,6 +189,16 @@ class TaskUpdate(BaseModel):
     then_task_id: Optional[str] = None
     notifications_enabled: Optional[bool] = None
     character_id: Optional[str] = None
+    foreground_policy: Optional[str] = None
+
+
+def _normalize_foreground_policy(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    if text in {"", "auto", "default"}:
+        return None
+    if text in {"run", "defer", "yield"}:
+        return text
+    raise HTTPException(400, "foreground_policy must be run, defer, yield, or empty")
 
 
 def _display_task_name(t: ScheduledTask) -> str:
@@ -225,6 +237,7 @@ def _task_to_dict(t: ScheduledTask, include_last_run_result: bool = False) -> di
         "run_count": t.run_count or 0,
         "then_task_id": t.then_task_id,
         "notifications_enabled": bool(getattr(t, "notifications_enabled", True)),
+        "foreground_policy": getattr(t, "foreground_policy", None),
         "webhook_token": t.webhook_token if (t.trigger_type or "schedule") == "webhook" else None,
         "created_at": t.created_at.isoformat() + "Z" if t.created_at else None,
         "updated_at": t.updated_at.isoformat() + "Z" if t.updated_at else None,
@@ -567,6 +580,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 webhook_token=webhook_token,
                 notifications_enabled=notifications_enabled,
                 character_id=(req.character_id or None),
+                foreground_policy=_normalize_foreground_policy(req.foreground_policy),
             )
             db.add(task)
             db.commit()
@@ -783,6 +797,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 task.then_task_id = _validate_then_task_id(db, req.then_task_id, user, current_task_id=task.id)
             if req.notifications_enabled is not None:
                 task.notifications_enabled = bool(req.notifications_enabled)
+            if req.foreground_policy is not None:
+                task.foreground_policy = _normalize_foreground_policy(req.foreground_policy)
             if req.character_id is not None:
                 # Empty string clears the persona; non-empty stores the id.
                 task.character_id = req.character_id or None
@@ -1120,8 +1136,48 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             {"name": "skill_added", "description": "Fires when a new skill is created"},
         ]}
 
+    @router.get("/meta/background-jobs")
+    async def list_background_jobs(request: Request, limit: int = 50):
+        """Durable queue status: handoffs, retries, parked approvals, agent runs."""
+        user = _owner(request)
+        from src.job_queue import list_jobs
+        return {"jobs": list_jobs(owner=user, limit=limit)}
+
+    @router.post("/approvals/{approval_id}")
+    async def decide_background_approval(request: Request, approval_id: str, body: dict):
+        """Approve or deny a parked background action. Does not widen the grant."""
+        from src.agent_runtime.authority import require_user_approval_request
+        from src.deferred_approvals import decide
+        user = _owner(request)
+        if not user:
+            raise HTTPException(401, "Authentication required")
+        require_user_approval_request(request)
+        decision = str((body or {}).get("decision") or "").strip().lower()
+        session_id = (body or {}).get("session_id")
+        try:
+            result = decide(
+                approval_id,
+                decision=decision,
+                owner=user,
+                session_id=session_id,
+                scheduler=task_scheduler,
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        resume = result.pop("resume", None)
+        if resume:
+            task_id, job_id, exact, continuation = resume
+            asyncio.create_task(task_scheduler.resume_parked_approval(
+                task_id, job_id, exact, continuation,
+            ))
+        return result
+
     @router.post("/{task_id}/webhook/{token}")
-    async def webhook_trigger(task_id: str, token: str):
+    async def webhook_trigger(task_id: str, token: str, request: Request = None):
         """Unauthenticated endpoint — the token IS the auth."""
         db = SessionLocal()
         try:
@@ -1142,8 +1198,30 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 raise HTTPException(403, f"Action '{task.action}' requires admin privileges")
         finally:
             db.close()
-        started = await task_scheduler.run_task_now(task_id)
+        event_payload = None
+        if request is not None:
+            try:
+                raw = await request.body()
+            except Exception:
+                raw = b""
+            if raw:
+                try:
+                    event_payload = json.loads(raw)
+                except Exception:
+                    event_payload = {"raw": raw.decode("utf-8", errors="replace")[:8000]}
+        started = await task_scheduler.run_task_now(task_id, event_payload=event_payload)
         if not started:
+            if event_payload is not None:
+                try:
+                    from src.job_queue import enqueue
+                    enqueue(
+                        "scheduled_task",
+                        task_id=task_id,
+                        payload={"event_payload": event_payload},
+                        dedupe_key=f"webhook-task:{task_id}:{str(event_payload)[:80]}",
+                    )
+                except Exception:
+                    pass
             raise HTTPException(409, "Task is already running")
         return {"ok": True, "message": "Task triggered via webhook"}
 

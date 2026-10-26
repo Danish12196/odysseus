@@ -119,6 +119,75 @@ class BackgroundToolJobs:
             headers=headers, temperature=0, max_tokens=700, timeout=60, max_retries=1,
             thinking_mode='off', workload='background', session_id=session.id)
 
+    def _research_candidate(self, owner, session_id):
+        fallback_url = fallback_model = None
+        try:
+            with database.SessionLocal() as db:
+                session = db.get(database.Session, session_id)
+                if session is not None:
+                    fallback_url = session.endpoint_url
+                    fallback_model = session.model
+        except Exception:
+            logger.debug("Could not read origin chat for research relaunch", exc_info=True)
+        try:
+            from src.task_endpoint import resolve_task_candidates
+            candidates = resolve_task_candidates(fallback_url, fallback_model, owner=owner)
+        except Exception:
+            logger.debug("Research candidate lookup failed", exc_info=True)
+            candidates = []
+        if candidates:
+            return candidates[0]
+        return fallback_url, fallback_model, {}
+
+    def _relaunch_missing_research(self, db, job) -> None:
+        """Start the research loop again when a restart dropped its memory.
+
+        A brand-new job can be registered a moment before start_research, so
+        missing state is ignored for the first 20 seconds. Explicit error and
+        cancelled states are completed by the caller and are not relaunched.
+        """
+        created = getattr(job, "created_at", None)
+        if created is not None:
+            try:
+                age = (database.utcnow_naive() - created).total_seconds()
+            except Exception:
+                age = 999
+            if age < 20:
+                return
+        attempts = int(getattr(job, "attempts", 0) or 0)
+        if attempts >= 2 or not hasattr(self.research_handler, "start_research"):
+            self.complete(job.id, "Research was interrupted by a server restart.", [], error=True)
+            return
+        job.attempts = attempts + 1
+        try:
+            db.commit()
+        except Exception:
+            logger.debug("Could not record research relaunch attempt", exc_info=True)
+        endpoint, model, headers = self._research_candidate(job.owner, job.session_id)
+        if not endpoint or not model:
+            self.complete(
+                job.id,
+                "Research was interrupted by a server restart and no model endpoint was available to resume it.",
+                [],
+                error=True,
+            )
+            return
+        try:
+            self.research_handler.start_research(
+                session_id=job.id,
+                query=job.query,
+                llm_endpoint=endpoint,
+                llm_model=model,
+                llm_headers=headers or {},
+                max_rounds=job.rounds or 2,
+                owner=job.owner or "",
+                on_complete=lambda sid, result, sources, findings: self.complete(sid, result, sources),
+            )
+            logger.info("Relaunched research %s after missing in-memory state (attempt %s)", job.id, job.attempts)
+        except Exception:
+            logger.exception("Could not relaunch research %s", job.id)
+            self.complete(job.id, "Research was interrupted by a server restart.", [], error=True)
+
     async def tick(self):
         async with self._lock:
             with database.SessionLocal() as db:
@@ -135,8 +204,10 @@ class BackgroundToolJobs:
                         if state == 'done':
                             self.complete(job_id, self.research_handler.get_result(job_id),
                                 self.research_handler.get_sources(job_id) or [])
-                        elif state in {'error', 'cancelled'} or not state:
-                            self.complete(job_id, f'Research {state or "was interrupted by a server restart"}.', [], error=True)
+                        elif state in {'error', 'cancelled'}:
+                            self.complete(job_id, f'Research {state}.', [], error=True)
+                        elif not state:
+                            self._relaunch_missing_research(db, job)
                         db.expire_all()
                     if job.status != 'ready' or self.is_busy(job.session_id):
                         continue

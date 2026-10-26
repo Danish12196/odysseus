@@ -35,9 +35,11 @@ def get_task_scheduler():
     return _task_scheduler
 
 
-def fire_event(event_name: str, owner: Optional[str] = None):
+def fire_event(event_name: str, owner: Optional[str] = None, payload=None):
     """Fire an event — increments counters and triggers tasks that hit threshold.
 
+    ``payload`` is untrusted data (the email that arrived, a webhook body).
+    It is stored on the task and substituted into ``{{event}}`` placeholders.
     Safe to call from both sync and async contexts.
     """
     try:
@@ -47,10 +49,15 @@ def fire_event(event_name: str, owner: Optional[str] = None):
         # can appear to hang while an event-triggered task is running.
         # Keep the handoff outside the response flush window. Event-triggered
         # tasks may still perform synchronous work before their first await.
-        loop.call_later(1.0, lambda: loop.create_task(_handle_event(event_name, owner)))
+        loop.call_later(
+            1.0,
+            lambda event_name=event_name, owner=owner, payload=payload: loop.create_task(
+                _handle_event(event_name, owner, payload)
+            ),
+        )
     except RuntimeError:
         # No running loop — run in a new one (shouldn't happen in FastAPI)
-        asyncio.run(_handle_event(event_name, owner))
+        asyncio.run(_handle_event(event_name, owner, payload))
 
 
 def _resolve_event_owner(owner: Optional[str]) -> Optional[str]:
@@ -79,7 +86,7 @@ def _resolve_event_owner(owner: Optional[str]) -> Optional[str]:
     return None
 
 
-async def _handle_event(event_name: str, owner: Optional[str] = None):
+async def _handle_event(event_name: str, owner: Optional[str] = None, payload=None):
     """Process an event: increment counters, fire tasks that hit their threshold."""
     from core.database import SessionLocal, ScheduledTask
 
@@ -114,11 +121,29 @@ async def _handle_event(event_name: str, owner: Optional[str] = None):
                 # survive reboot instead of losing the event after the counter
                 # has already reset.
                 task.next_run = datetime.utcnow()
+                if payload is not None:
+                    try:
+                        from src.event_payload import dump_payload
+                        task.event_payload_json = dump_payload(payload)
+                    except Exception:
+                        logger.debug("Could not store event payload", exc_info=True)
                 db.commit()
                 # Fire the task
                 if _task_scheduler:
                     logger.info(f"Event '{event_name}' triggered task '{task.name}' (every {threshold})")
-                    await _task_scheduler.run_task_now(task.id)
+                    started = await _task_scheduler.run_task_now(task.id, event_payload=payload)
+                    if not started and payload is not None:
+                        try:
+                            from src.job_queue import enqueue
+                            enqueue(
+                                "scheduled_task",
+                                owner=task.owner,
+                                task_id=task.id,
+                                payload={"event_payload": payload, "event": event_name},
+                                dedupe_key=f"event:{task.id}:{str(payload)[:80]}",
+                            )
+                        except Exception:
+                            logger.debug("Could not queue event payload", exc_info=True)
                 else:
                     logger.warning(f"Event triggered task '{task.name}' but no scheduler available")
             else:

@@ -317,6 +317,8 @@ class BackgroundToolJob(Base):
     summary = Column(Text, nullable=True)
     message_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=utcnow_naive)
+    # How many times an in-memory research run was relaunched after a restart.
+    attempts = Column(Integer, default=0)
 
 
 class Document(TimestampMixin, Base):
@@ -808,6 +810,10 @@ class ScheduledTask(TimestampMixin, Base):
     max_steps      = Column(Integer, nullable=True)       # max agent loop iterations (null=unlimited)
     email_results  = Column(Boolean, default=True)        # email results to character.email_to
     notifications_enabled = Column(Boolean, default=True) # per-task on/off for completion notifications
+    # run | defer | yield. Null follows the global BACKGROUND_FOREGROUND_POLICY.
+    foreground_policy = Column(String, nullable=True)
+    # Last event/webhook payload. Rendered into the prompt as untrusted data.
+    event_payload_json = Column(Text, nullable=True)
 
     session = relationship("Session", backref=backref("scheduled_tasks", cascade="save-update, merge"))
     then_task = relationship("ScheduledTask", remote_side=[id], foreign_keys=[then_task_id])
@@ -871,6 +877,50 @@ class TaskRun(Base):
     __table_args__ = (
         Index('ix_task_runs_task', 'task_id', 'started_at'),
     )
+
+
+class BackgroundJob(Base):
+    """Durable queue for handoffs, webhook retries, approval parks and run history.
+
+    The in-process scheduler claims these rows. An optional separate worker
+    (``python -m src.background_worker``) can claim them instead when the web
+    process is not running the scheduler.
+    """
+    __tablename__ = "background_jobs"
+
+    id = Column(String, primary_key=True, index=True)
+    kind = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="queued", index=True)
+    owner = Column(String, nullable=True, index=True)
+    session_id = Column(String, nullable=True, index=True)
+    task_id = Column(String, nullable=True, index=True)
+    dedupe_key = Column(String, nullable=True, index=True)
+    payload_json = Column(Text, nullable=True)
+    result = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    attempts = Column(Integer, default=0)
+    max_attempts = Column(Integer, default=3)
+    next_attempt_at = Column(DateTime, nullable=True, index=True)
+    locked_by = Column(String, nullable=True)
+    locked_until = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive)
+    finished_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_background_jobs_due", "status", "next_attempt_at"),
+    )
+
+
+class BackgroundJobEvent(Base):
+    """Append-only status history for a background job."""
+    __tablename__ = "background_job_events"
+
+    id = Column(String, primary_key=True)
+    job_id = Column(String, ForeignKey("background_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String, nullable=False)
+    message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utcnow_naive)
 
 
 class NotificationLog(Base):
@@ -2345,6 +2395,33 @@ def _migrate_add_task_authority_column():
             conn.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN request_authority_json TEXT"))
 
 
+def _migrate_background_runtime():
+    """Add foreground-policy, event payload, and research-retry columns.
+
+    New tables (background_jobs) come from create_all. These ALTERs keep an
+    existing data/ volume working without a manual migration step.
+    """
+    from sqlalchemy import inspect
+    statements = (
+        ("scheduled_tasks", "foreground_policy", "ALTER TABLE scheduled_tasks ADD COLUMN foreground_policy VARCHAR"),
+        ("scheduled_tasks", "event_payload_json", "ALTER TABLE scheduled_tasks ADD COLUMN event_payload_json TEXT"),
+        ("background_tool_jobs", "attempts", "ALTER TABLE background_tool_jobs ADD COLUMN attempts INTEGER DEFAULT 0"),
+    )
+    try:
+        with engine.begin() as conn:
+            inspector = inspect(conn)
+            tables = set(inspector.get_table_names())
+            for table, column, sql in statements:
+                if table not in tables:
+                    continue
+                columns = {item["name"] for item in inspector.get_columns(table)}
+                if column not in columns:
+                    conn.execute(text(sql))
+    except Exception:
+        logger.exception("Background runtime migration failed")
+        raise
+
+
 def init_db():
     """
     Initialize the database by creating all tables.
@@ -2423,6 +2500,7 @@ def init_db():
     _migrate_add_email_oauth_columns()
     _migrate_add_task_automation_columns()
     _migrate_add_task_authority_column()
+    _migrate_background_runtime()
     _migrate_add_disabled_tools()
     _migrate_add_mcp_oauth_tokens_column()
     _migrate_add_task_v2_columns()

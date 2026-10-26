@@ -56,6 +56,18 @@ services:
       - CLEANUP_INTERVAL_HOURS=${CLEANUP_INTERVAL_HOURS:-24}
       - ODYSSEUS_INPROCESS_POLLERS=${ODYSSEUS_INPROCESS_POLLERS:-1}
       - ODYSSEUS_INPROCESS_TASKS=${ODYSSEUS_INPROCESS_TASKS:-1}
+      # Foreground policy for routines. auto runs immediately when a separate
+      # or parallel background model is configured, and otherwise waits at most
+      # BACKGROUND_TASK_DEFER_MAX_WAIT_SECONDS before running anyway.
+      # yield is the old behaviour: postpone and cancel while the UI is active.
+      - BACKGROUND_FOREGROUND_POLICY=${BACKGROUND_FOREGROUND_POLICY:-auto}
+      - BACKGROUND_TASK_DEFER_MAX_WAIT_SECONDS=${BACKGROUND_TASK_DEFER_MAX_WAIT_SECONDS:-180}
+      - BACKGROUND_MODEL_ENDPOINT=${BACKGROUND_MODEL_ENDPOINT:-}
+      - BACKGROUND_MODEL_SLOTS=${BACKGROUND_MODEL_SLOTS:-1}
+      - BACKGROUND_MODEL_PARALLEL=${BACKGROUND_MODEL_PARALLEL:-}
+      - BACKGROUND_ENDPOINT_SLOTS=${BACKGROUND_ENDPOINT_SLOTS:-}
+      - WEBHOOK_RETRY_DELAYS=${WEBHOOK_RETRY_DELAYS:-0,1,4}
+      - BACKGROUND_JOB_MAX_ATTEMPTS=${BACKGROUND_JOB_MAX_ATTEMPTS:-3}
       - ODYSSEUS_QWEN_NATIVE_COMPACT_BUILTINS=${ODYSSEUS_QWEN_NATIVE_COMPACT_BUILTINS:-1}
       - ODYSSEUS_QWEN_SUPPRESS_LOCAL_CONTEXT=${ODYSSEUS_QWEN_SUPPRESS_LOCAL_CONTEXT:-0}
       - ODYSSEUS_CAPTURE_MODEL_REQUESTS=${ODYSSEUS_CAPTURE_MODEL_REQUESTS:-0}
@@ -185,6 +197,42 @@ services:
       - ntfy-cache:/var/cache/ntfy
     environment:
       - NTFY_BASE_URL=${NTFY_BASE_URL:-http://localhost:8091}
+    restart: unless-stopped
+
+  # Optional. `docker compose up` does not start this. Use it only when the
+  # web process is not also firing routines:
+  #   ODYSSEUS_INPROCESS_TASKS=0 docker compose --profile background-worker up -d
+  # Both processes share ./data and the same SQLite file. Do not run two
+  # schedulers against that file.
+  background-worker:
+    profiles: ["background-worker"]
+    image: ${ODYSSEUS_IMAGE:-ghcr.io/odysseus-dev/odysseus:latest}
+    build: .
+    command: ["python", "-m", "src.background_worker"]
+    volumes:
+      - ${APP_DATA_DIR:-./data}:/app/data:z
+      - ${APP_LOGS_DIR:-./logs}:/app/logs:z
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/app.db}
+      - ODYSSEUS_INPROCESS_TASKS=1
+      - BACKGROUND_FOREGROUND_POLICY=${BACKGROUND_FOREGROUND_POLICY:-auto}
+      - BACKGROUND_TASK_DEFER_MAX_WAIT_SECONDS=${BACKGROUND_TASK_DEFER_MAX_WAIT_SECONDS:-180}
+      - BACKGROUND_MODEL_ENDPOINT=${BACKGROUND_MODEL_ENDPOINT:-}
+      - BACKGROUND_MODEL_SLOTS=${BACKGROUND_MODEL_SLOTS:-1}
+      - BACKGROUND_MODEL_PARALLEL=${BACKGROUND_MODEL_PARALLEL:-}
+      - BACKGROUND_ENDPOINT_SLOTS=${BACKGROUND_ENDPOINT_SLOTS:-}
+      - WEBHOOK_RETRY_DELAYS=${WEBHOOK_RETRY_DELAYS:-0,1,4}
+      - BACKGROUND_JOB_MAX_ATTEMPTS=${BACKGROUND_JOB_MAX_ATTEMPTS:-3}
+      - LLM_HOST=${LLM_HOST:-localhost}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - CHROMADB_HOST=chromadb
+      - CHROMADB_PORT=8000
+      - SEARXNG_INSTANCE=http://searxng:8080
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:
