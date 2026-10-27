@@ -68,17 +68,22 @@ def _xoauth2_bytes(user: str, access_token: str) -> bytes:
     return _xoauth2_raw(user, access_token).encode()
 
 
-def make_oauth_state(account_id: str, owner: str) -> str:
+def make_oauth_state(account_id: str, owner: str, extra: dict | None = None) -> str:
     """Return an HMAC-signed, base64-encoded OAuth state token.
 
     Encodes account_id + owner + a random nonce, signed with the app secret
     so the callback can validate that the flow was initiated by an
-    authenticated, owning user (CSRF / state-forgery protection).
+    authenticated, owning user (CSRF / state-forgery protection). ``extra``
+    carries non-secret flow data such as the Microsoft tenant segment.
     """
     import hmac as _hmac, hashlib as _hl, secrets as _sec
     from src.secret_storage import _load_or_create_key
     nonce = _sec.token_hex(16)
-    payload = json.dumps({"a": account_id, "o": owner, "n": nonce}, separators=(",", ":"))
+    payload_data = {"a": account_id, "o": owner, "n": nonce}
+    for key, value in (extra or {}).items():
+        if key not in payload_data and isinstance(value, str):
+            payload_data[key] = value
+    payload = json.dumps(payload_data, separators=(",", ":"))
     sig = _hmac.new(_load_or_create_key(), payload.encode(), _hl.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}|{sig}".encode()).decode()
 
@@ -151,6 +156,31 @@ def _get_valid_google_token(account_id: str, cfg: dict) -> str | None:
         except (ValueError, TypeError):
             pass
     return _refresh_google_token(account_id)
+
+
+def _oauth_access_token(cfg: dict) -> str | None:
+    """Access token for a Google or Microsoft mailbox, or None when absent."""
+
+    provider = (cfg or {}).get("oauth_provider") or ""
+    account_id = (cfg or {}).get("account_id") or ""
+    if provider == "google":
+        return _get_valid_google_token(account_id, cfg)
+    if provider == "microsoft":
+        from src.microsoft_oauth import valid_access_token
+        return valid_access_token(account_id, cfg)
+    return None
+
+
+def _oauth_token_required(cfg: dict) -> str:
+    """Return a token or raise a reconnect error that names the provider."""
+
+    provider = (cfg or {}).get("oauth_provider") or ""
+    token = _oauth_access_token(cfg)
+    if token:
+        return token
+    if provider == "microsoft":
+        raise RuntimeError("Microsoft OAuth token unavailable — reconnect the account in Settings → Integrations")
+    raise RuntimeError("Google OAuth token unavailable — reconnect the account in Settings → Integrations")
 
 
 def _smtp_security_mode(cfg: dict) -> str:
@@ -259,10 +289,8 @@ def _send_smtp_message(cfg: dict, from_addr: str, recipients: list[str], message
     password = cfg.get("smtp_password") or ""
 
     def _auth_smtp(smtp):
-        if cfg.get("oauth_provider") == "google":
-            token = _get_valid_google_token(cfg.get("account_id"), cfg)
-            if not token:
-                raise RuntimeError("Google OAuth token unavailable — reconnect the account")
+        if cfg.get("oauth_provider") in {"google", "microsoft"}:
+            token = _oauth_token_required(cfg)
             smtp.ehlo()
             smtp.auth("XOAUTH2", lambda challenge=None: _xoauth2_raw(user, token), initial_response_ok=True)
         elif user and password:
@@ -309,9 +337,9 @@ def _friendly_email_auth_error(protocol: str, host: str, error: object) -> str:
     if microsoft_basic_auth_failure:
         return (
             "Microsoft no longer accepts normal mailbox passwords for "
-            "Outlook/Office 365 IMAP/SMTP in most accounts. Odysseus "
-            "does not support Microsoft OAuth/Graph mail yet, so Outlook "
-            "accounts cannot be added with this password form."
+            "Outlook/Office 365 IMAP/SMTP. Connect the mailbox with "
+            "Microsoft OAuth/Graph (Settings → Email → Microsoft) instead "
+            "of a password."
         )
     return raw[:200]
 
@@ -1222,6 +1250,7 @@ def _get_email_config(account_id: str | None = None, owner: str = "") -> dict:
                     "oauth_access_token": row.oauth_access_token or "",
                     "oauth_refresh_token": row.oauth_refresh_token or "",
                     "oauth_token_expiry": row.oauth_token_expiry or "",
+                    "oauth_tenant": getattr(row, "oauth_tenant", None) or "",
                     "display_name": row.display_name or "",
                 }
                 is_oauth = bool(cfg.get("oauth_provider"))
@@ -1374,10 +1403,8 @@ def _imap_connect(account_id: str | None = None, owner: str = "",
         owner=cfg.get("owner"),
     )
     try:
-        if cfg.get("oauth_provider") == "google":
-            token = _get_valid_google_token(cfg.get("account_id"), cfg)
-            if not token:
-                raise RuntimeError("Google OAuth token unavailable — reconnect the account in Settings → Integrations")
+        if cfg.get("oauth_provider") in {"google", "microsoft"}:
+            token = _oauth_token_required(cfg)
             conn.authenticate("XOAUTH2", lambda x: _xoauth2_bytes(cfg["imap_user"], token))
         else:
             conn.login(cfg["imap_user"], cfg["imap_password"])

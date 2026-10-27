@@ -104,6 +104,13 @@ async def task_llm_call_async(
     )
     if not candidates:
         raise RuntimeError("No LLM endpoint available for background task")
+    try:
+        from src.work_routing import apply_work_routing
+        candidates = apply_work_routing(candidates, messages, kind="background")
+    except Exception:
+        pass
+    if not candidates:
+        raise RuntimeError("No LLM endpoint available for background task")
     await wait_for_interactive_quiet("background task LLM")
     kwargs.setdefault("workload", "background")
     if kwargs.get("reasoning_effort") is None:

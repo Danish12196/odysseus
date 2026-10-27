@@ -461,10 +461,11 @@ class EmailAccount(TimestampMixin, Base):
     display_name   = Column(String, nullable=True)   # "Hriday Ranka" — used in From: header
 
     # OAuth2 (Google / Google Workspace). Tokens stored encrypted via secret_storage.
-    oauth_provider      = Column(String, nullable=True)   # "google" or None
+    oauth_provider      = Column(String, nullable=True)   # "google", "microsoft", or None
     oauth_access_token  = Column(String, nullable=True)   # encrypted
     oauth_refresh_token = Column(String, nullable=True)   # encrypted
     oauth_token_expiry  = Column(String, nullable=True)   # unix timestamp string
+    oauth_tenant        = Column(String, nullable=True)   # Microsoft tenant segment
 
     __table_args__ = (
         Index('ix_email_accounts_owner_default', 'owner', 'is_default'),
@@ -1979,6 +1980,20 @@ def _migrate_add_email_oauth_columns():
         logging.getLogger(__name__).warning(f"email oauth columns migration: {e}")
 
 
+def _migrate_add_email_oauth_tenant():
+    """Remember which Microsoft tenant issued a mailbox token."""
+    try:
+        from sqlalchemy import inspect
+        columns = {column["name"] for column in inspect(engine).get_columns("email_accounts")}
+        if "oauth_tenant" in columns:
+            return
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE email_accounts ADD COLUMN oauth_tenant TEXT"))
+            conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"email oauth tenant migration: {e}")
+
+
 def _migrate_add_oauth_config():
     """Add oauth_config column to mcp_servers table if missing."""
     try:
@@ -2498,6 +2513,7 @@ def init_db():
     _migrate_add_calendar_source_email_cols()
     _migrate_add_oauth_config()
     _migrate_add_email_oauth_columns()
+    _migrate_add_email_oauth_tenant()
     _migrate_add_task_automation_columns()
     _migrate_add_task_authority_column()
     _migrate_background_runtime()

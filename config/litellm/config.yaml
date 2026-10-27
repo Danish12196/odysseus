@@ -1,0 +1,23 @@
+# Optional LiteLLM config. Odysseus does not require this proxy.
+# The native provider clients already speak xAI, Anthropic, and OpenAI.
+# Start it with: docker compose --profile litellm up -d
+# Then set ESCALATION_MODEL_BASE_URL=http://litellm:4000/v1
+# and ESCALATION_MODEL_NAME to one of the model_name values below.
+# Set ESCALATION_MODEL_API_KEY to LITELLM_MASTER_KEY when you set one.
+
+model_list:
+  - model_name: grok
+    litellm_params:
+      model: xai/grok-4
+      api_key: os.environ/XAI_API_KEY
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: gpt
+    litellm_params:
+      model: openai/gpt-4.1
+      api_key: os.environ/OPENAI_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -472,6 +472,11 @@ def analyze_image_with_vl_result(image_path: str, owner: str | None = None) -> d
             _vl_candidates = [(url, model_id, headers)] + resolve_vision_fallback_candidates(owner=owner)
         except Exception:
             _vl_candidates = [(url, model_id, headers)]
+        try:
+            from src.work_routing import extend_candidates
+            _vl_candidates = extend_candidates(_vl_candidates, kind="vision", messages=vl_messages)
+        except Exception:
+            pass
 
         last_err = None
         for i, (_url, _model, _headers) in enumerate([c for c in _vl_candidates if c and c[0] and c[1]]):

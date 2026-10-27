@@ -2486,6 +2486,16 @@ def llm_call_with_fallback(candidates, messages, **kwargs) -> str:
     raise last_err if last_err else HTTPException(503, "All fallback candidates failed")
 
 
+def _note_routed_spend(url: str, model: str) -> None:
+    """Record one estimated API call when a daily budget is configured."""
+
+    try:
+        from src.work_routing import note_successful_call
+        note_successful_call(url, model)
+    except Exception:
+        logger.debug("model spend note skipped", exc_info=True)
+
+
 async def llm_call_async_with_fallback(candidates, messages, **kwargs) -> str:
     """Async variant of `llm_call_with_fallback` — same semantics.
 
@@ -2508,9 +2518,11 @@ async def llm_call_async_with_fallback(candidates, messages, **kwargs) -> str:
                     request = await request
                 candidate_messages = request.get("messages", messages)
                 candidate_kwargs = {**kwargs, **(request.get("kwargs") or {})}
-            return await llm_call_async(
+            response = await llm_call_async(
                 url, model, candidate_messages, headers=headers, **candidate_kwargs
             )
+            _note_routed_spend(url, model)
+            return response
         except Exception as e:
             last_err = e
             tag = "primary" if i == 0 else "candidate"
@@ -2588,6 +2600,7 @@ async def llm_call_async_with_route_fallback(
                 response, reported_model = response
                 if isinstance(reported_model, str) and reported_model.strip():
                     actual_model = reported_model.strip()
+            _note_routed_spend(url, model)
             return response, candidate, actual_model
         except Exception as error:
             if getattr(error, "fallback_eligible", None) is False:
@@ -4669,6 +4682,7 @@ async def stream_llm_with_fallback(candidates, messages, **kwargs):
                         yield metadata_chunk
                     pending_metadata.clear()
                     emitted = True
+                    _note_routed_spend(url, model)
 
                 if substantive or emitted:
                     yield chunk

@@ -106,6 +106,37 @@ services:
       - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
       - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}
       - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI:-}
+      - MICROSOFT_OAUTH_CLIENT_ID=${MICROSOFT_OAUTH_CLIENT_ID:-}
+      - MICROSOFT_OAUTH_CLIENT_SECRET=${MICROSOFT_OAUTH_CLIENT_SECRET:-}
+      - MICROSOFT_OAUTH_TENANT=${MICROSOFT_OAUTH_TENANT:-common}
+      - MICROSOFT_OAUTH_REDIRECT_URI=${MICROSOFT_OAUTH_REDIRECT_URI:-}
+      - WORK_ROUTING_ENABLED=${WORK_ROUTING_ENABLED:-auto}
+      - WORK_ROUTING_AUTO_ESCALATE=${WORK_ROUTING_AUTO_ESCALATE:-auto}
+      - WORK_ROUTING_ESCALATE_CHARS=${WORK_ROUTING_ESCALATE_CHARS:-6000}
+      - WORK_ROUTING_ESCALATE_ROUNDS=${WORK_ROUTING_ESCALATE_ROUNDS:-4}
+      - LOCAL_MODEL_BASE_URL=${LOCAL_MODEL_BASE_URL:-}
+      - LOCAL_MODEL_NAME=${LOCAL_MODEL_NAME:-}
+      - LOCAL_MODEL_API_KEY=${LOCAL_MODEL_API_KEY:-}
+      - ESCALATION_MODEL_BASE_URL=${ESCALATION_MODEL_BASE_URL:-}
+      - ESCALATION_MODEL_NAME=${ESCALATION_MODEL_NAME:-}
+      - ESCALATION_MODEL_API_KEY=${ESCALATION_MODEL_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - XAI_MODEL=${XAI_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
+      - VISION_MODEL_BASE_URL=${VISION_MODEL_BASE_URL:-}
+      - VISION_MODEL_NAME=${VISION_MODEL_NAME:-}
+      - VISION_MODEL_API_KEY=${VISION_MODEL_API_KEY:-}
+      - CODING_MODEL_BASE_URL=${CODING_MODEL_BASE_URL:-}
+      - CODING_MODEL_NAME=${CODING_MODEL_NAME:-}
+      - CODING_MODEL_API_KEY=${CODING_MODEL_API_KEY:-}
+      - MODEL_API_DAILY_BUDGET_USD=${MODEL_API_DAILY_BUDGET_USD:-0}
+      - MODEL_API_CALL_ESTIMATE_USD=${MODEL_API_CALL_ESTIMATE_USD:-}
+      - MS365_MCP_URL=${MS365_MCP_URL:-}
+      - MS365_MCP_SERVERS=${MS365_MCP_SERVERS:-}
+      - MS365_MCP_ALLOW_GRAPH_SEND=${MS365_MCP_ALLOW_GRAPH_SEND:-0}
+      - MS365_MCP_MAX_TOOLS=${MS365_MCP_MAX_TOOLS:-24}
+      - MS365_MCP_TOOL_MODE=${MS365_MCP_TOOL_MODE:-read-draft}
       # Externally reachable origin for MCP OAuth callbacks. The container
       # always listens on 7000 and cannot see the host port map above, so
       # remote MCP OAuth needs this set whenever the browser reaches
@@ -245,6 +276,22 @@ services:
       - BACKGROUND_ENDPOINT_SLOTS=${BACKGROUND_ENDPOINT_SLOTS:-}
       - WEBHOOK_RETRY_DELAYS=${WEBHOOK_RETRY_DELAYS:-0,1,4}
       - BACKGROUND_JOB_MAX_ATTEMPTS=${BACKGROUND_JOB_MAX_ATTEMPTS:-3}
+      - WORK_ROUTING_ENABLED=${WORK_ROUTING_ENABLED:-auto}
+      - WORK_ROUTING_AUTO_ESCALATE=${WORK_ROUTING_AUTO_ESCALATE:-auto}
+      - WORK_ROUTING_ESCALATE_CHARS=${WORK_ROUTING_ESCALATE_CHARS:-6000}
+      - WORK_ROUTING_ESCALATE_ROUNDS=${WORK_ROUTING_ESCALATE_ROUNDS:-4}
+      - LOCAL_MODEL_BASE_URL=${LOCAL_MODEL_BASE_URL:-}
+      - LOCAL_MODEL_NAME=${LOCAL_MODEL_NAME:-}
+      - LOCAL_MODEL_API_KEY=${LOCAL_MODEL_API_KEY:-}
+      - ESCALATION_MODEL_BASE_URL=${ESCALATION_MODEL_BASE_URL:-}
+      - ESCALATION_MODEL_NAME=${ESCALATION_MODEL_NAME:-}
+      - ESCALATION_MODEL_API_KEY=${ESCALATION_MODEL_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - XAI_MODEL=${XAI_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
+      - MODEL_API_DAILY_BUDGET_USD=${MODEL_API_DAILY_BUDGET_USD:-0}
+      - MODEL_API_CALL_ESTIMATE_USD=${MODEL_API_CALL_ESTIMATE_USD:-}
       - LLM_HOST=${LLM_HOST:-localhost}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
@@ -255,6 +302,50 @@ services:
       - PGID=${PGID:-1000}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Optional. Not started by `docker compose up`. Calendar, contacts, and a
+  # second mail view via Microsoft Graph. Odysseus blocks Graph send tools
+  # and sends mail through the IMAP/SMTP approval flow instead.
+  #   docker compose --profile ms365 up -d
+  ms365-mcp:
+    profiles: ["ms365"]
+    image: ghcr.io/softeria/ms-365-mcp-server:0.173.0@sha256:e1a56985dc6e89f164d1ae4584424b90d3f3521567b2384802ea2b3e9cc51a0d
+    command:
+      - --http
+      - 0.0.0.0:3000
+      - --preset
+      - ${MS365_MCP_PRESET:-outlook}
+      - --discovery
+      - --public-url
+      - ${MS365_MCP_PUBLIC_URL:-http://127.0.0.1:3339}
+    ports:
+      - "127.0.0.1:${MS365_MCP_PORT:-3339}:3000"
+    environment:
+      - MS365_MCP_CLIENT_ID=${MS365_MCP_CLIENT_ID:-}
+      - MS365_MCP_CLIENT_SECRET=${MS365_MCP_CLIENT_SECRET:-}
+      - MS365_MCP_TENANT_ID=${MS365_MCP_TENANT_ID:-common}
+      - MS365_MCP_ORG_MODE=${MS365_MCP_ORG_MODE:-true}
+      - READ_ONLY=${MS365_MCP_READ_ONLY:-false}
+    restart: unless-stopped
+
+  # Optional. Odysseus already calls xAI, Anthropic, and OpenAI directly.
+  # Use this only when you want one OpenAI-compatible URL in front of those
+  # keys. Point ESCALATION_MODEL_BASE_URL at http://litellm:4000/v1.
+  #   docker compose --profile litellm up -d
+  litellm:
+    profiles: ["litellm"]
+    image: ghcr.io/berriai/litellm:main-latest@sha256:7294b90f868c5c38c99b83021c7ba46f9b439e95f8e32964c925c7d2563a03f7
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./config/litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     restart: unless-stopped
 
 volumes:

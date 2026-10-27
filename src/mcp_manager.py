@@ -570,6 +570,14 @@ class McpManager:
         server_id = parts[1]
         tool_name = parts[2]
 
+        try:
+            from src.microsoft_mcp import send_block_reason
+            blocked = send_block_reason(server_id, tool_name)
+        except Exception:
+            blocked = None
+        if blocked:
+            return {"error": blocked, "exit_code": 1, "approval_required": True}
+
         session = self._sessions.get(server_id)
         if not session:
             return {"error": f"MCP server not connected: {server_id}", "exit_code": 1}
@@ -703,7 +711,12 @@ class McpManager:
                 continue
             conn = self._connections.get(server_id, {})
             server_name = conn.get("name", server_id)
-            disabled = (disabled_map or {}).get(server_id, set())
+            disabled = set((disabled_map or {}).get(server_id, set()))
+            try:
+                from src.microsoft_mcp import extra_disabled_tools
+                disabled |= extra_disabled_tools(server_id, [tool.get("name") for tool in tools])
+            except Exception:
+                pass
 
             identity = conn.get("identity", "")
             label = f"{server_name} ({identity})" if identity else server_name
@@ -729,7 +742,12 @@ class McpManager:
         result = []
         for server_id, tools in self._tools.items():
             conn = self._connections.get(server_id, {})
-            disabled = (disabled_map or {}).get(server_id, set())
+            disabled = set((disabled_map or {}).get(server_id, set()))
+            try:
+                from src.microsoft_mcp import extra_disabled_tools
+                disabled |= extra_disabled_tools(server_id, [tool.get("name") for tool in tools])
+            except Exception:
+                pass
             for tool in tools:
                 result.append({
                     "server_id": server_id,
