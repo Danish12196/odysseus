@@ -785,6 +785,7 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
         if not writing_style:
             writing_style = settings.get("email_writing_style", "")
         processed = 0
+        _observed_inbox = []
         already_cached = 0
         too_short = 0
         no_msgid = 0
@@ -852,6 +853,17 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
                 if _is_automated and auto_tag:
                     _remove_urgent_tag_from_cache(message_id, account_owner or "", account_id or "")
                 _is_self_mail = bool(_self_self_addr) and _from_addr_only.lower() == _self_self_addr
+                if (_current_folder or "INBOX").upper() == "INBOX":
+                    uid_text = uid.decode() if isinstance(uid, bytes) else str(uid)
+                    _observed_inbox.append({
+                        "account": account_id,
+                        "folder": _current_folder or "INBOX",
+                        "message_id": message_id,
+                        "uid": uid_text,
+                        "subject": _subj_raw,
+                        "from": _from_raw,
+                        "date": str(msg.get("Date") or ""),
+                    })
                 need_sum = auto_sum and message_id not in _sum_existing
                 need_reply = auto_reply_draft and message_id not in _reply_existing
                 need_away_reply = bool(
@@ -1552,6 +1564,12 @@ async def _auto_summarize_pass_single(days_back: int = 1, account_id: str | None
             parts.append(f"created {_events_created} calendar event(s)")
         if processed == 0 and already_cached == 0 and too_short == 0:
             parts.append("nothing to do")
+        if _observed_inbox and account_owner:
+            try:
+                from routes.email.email_routes import _record_email_received_events
+                _record_email_received_events(account_owner, account_id, "INBOX", _observed_inbox)
+            except Exception:
+                logger.debug("email_received poller event skipped", exc_info=True)
         summary = " · ".join(parts)
         if _detail_lines:
             summary += "\n\nProcessed:\n" + "\n".join(f"- {line}" for line in _detail_lines[:20])

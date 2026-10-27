@@ -122,6 +122,9 @@ def test_stop_task_cleans_up_queued_handle_and_run(tmp_path, monkeypatch):
 @pytest.mark.parametrize('mode', ['foreground', 'single', 'queued', 'queued_repeat'])
 @pytest.mark.parametrize('lock_mode', ['EXCLUSIVE', 'IMMEDIATE'])
 def test_cancel_keeps_event_loop_responsive_during_database_lock(tmp_path, monkeypatch, mode, lock_mode):
+    # Yield is the only policy that cancels a running task for foreground
+    # activity. The default is defer, which must leave this run alone.
+    monkeypatch.setenv("BACKGROUND_FOREGROUND_POLICY", "yield")
     session_local, ScheduledTask, TaskRun = _setup_db(tmp_path, monkeypatch)
     with session_local() as db:
         if mode.startswith('queued'):

@@ -124,12 +124,17 @@ async def _local_model_slot(target_url: str, model: str, workload: Optional[str]
     gate_lock = _LOCAL_MODEL_LOCKS.setdefault(gate_key, asyncio.Lock())
     kind = _gate_workload(workload)
     current_task = asyncio.current_task()
+    from src.foreground_policy import current_policy
+    # ``run`` and ``defer`` already decided this call should use the model.
+    # A chat heartbeat must not park it again, and must not cancel it.
+    # Unbound callers and the historical ``yield`` policy keep the old gate.
+    yields_to_foreground = current_policy() in (None, "yield")
     if kind == "foreground":
         _LOCAL_MODEL_WAITING_FOREGROUND[gate_key] = (
             _LOCAL_MODEL_WAITING_FOREGROUND.get(gate_key, 0) + 1
         )
         current = dict(_LOCAL_MODEL_CURRENT.get(gate_key, {}))
-        if current.get("workload") == "background":
+        if current.get("workload") == "background" and current.get("policy") in (None, "yield"):
             task = current.get("task")
             if isinstance(task, asyncio.Task) and not task.done():
                 logger.info(
@@ -137,7 +142,7 @@ async def _local_model_slot(target_url: str, model: str, workload: Optional[str]
                     model,
                 )
                 task.cancel()
-    else:
+    elif yields_to_foreground:
         # Background work should not jump in while the browser/chat is active
         # or while a foreground request is waiting to acquire the local model.
         try:
@@ -161,6 +166,7 @@ async def _local_model_slot(target_url: str, model: str, workload: Optional[str]
         _LOCAL_MODEL_CURRENT[gate_key] = {
             "task": current_task,
             "workload": kind,
+            "policy": current_policy(),
             "url": target_url,
             "model": model,
             "started": time.time(),

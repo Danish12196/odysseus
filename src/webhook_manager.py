@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import os
 import hmac
 import ipaddress
 import json
@@ -18,6 +19,31 @@ import httpx
 from src.database import SessionLocal, Webhook
 
 logger = logging.getLogger(__name__)
+
+_webhook_manager = None
+
+
+def set_webhook_manager(manager) -> None:
+    global _webhook_manager
+    _webhook_manager = manager
+
+
+def get_webhook_manager():
+    return _webhook_manager
+
+
+def _retry_delays() -> list[float]:
+    raw = os.getenv("WEBHOOK_RETRY_DELAYS", "0,1,4")
+    delays = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            delays.append(max(0.0, float(part)))
+        except ValueError:
+            continue
+    return delays or [0.0]
 
 ALLOWED_EVENTS = frozenset({
     "session.created",
@@ -402,7 +428,22 @@ class WebhookManager:
         ) as client:
             return await client.post(url, content=body, headers=headers)
 
-    async def _deliver(self, webhook_id: str, url: str, secret: Optional[str], event: str, payload: dict):
+    async def redeliver(self, webhook_id: str, event: str, payload: dict) -> None:
+        """Retry a delivery from the durable job queue. Loads the URL and secret again."""
+        from core.database import SessionLocal, Webhook
+        db = SessionLocal()
+        try:
+            webhook = db.query(Webhook).filter(Webhook.id == webhook_id, Webhook.is_active == True).first()  # noqa: E712
+            if webhook is None:
+                raise RuntimeError("webhook is no longer active")
+            url = webhook.url
+            secret = self._decrypt_secret(webhook.secret)
+        finally:
+            db.close()
+        await self._deliver(webhook_id, url, secret, event, payload, schedule_retry=False)
+
+    async def _deliver(self, webhook_id: str, url: str, secret: Optional[str], event: str, payload: dict,
+                       schedule_retry: bool = True):
         """Internal delivery. Never call directly from outside this class (use deliver_test)."""
         # Re-validate URL at delivery time in case DB was tampered with, and
         # capture the exact IPs that passed the check so the connect can be
@@ -425,28 +466,55 @@ class WebhookManager:
             sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
             headers["X-Odysseus-Signature"] = sig
 
+        delays = _retry_delays()
         db = SessionLocal()
+        last_error = None
+        last_status = None
         try:
-            resp = await self._send_request(url, body, headers, pinned_ips[0])
-            db.query(Webhook).filter(Webhook.id == webhook_id).update({
-                "last_triggered_at": _utcnow(),
-                "last_status_code": resp.status_code,
-                "last_error": None,
-            })
-            db.commit()
-        except Exception as e:
-            logger.warning(f"Webhook delivery failed for {webhook_id}")
+            for attempt, delay in enumerate(delays):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    resp = await self._send_request(url, body, headers, pinned_ips[0])
+                    last_status = resp.status_code
+                    if resp.status_code < 500 and resp.status_code != 429:
+                        db.query(Webhook).filter(Webhook.id == webhook_id).update({
+                            "last_triggered_at": _utcnow(),
+                            "last_status_code": resp.status_code,
+                            "last_error": None,
+                        })
+                        db.commit()
+                        return
+                    last_error = f"HTTP {resp.status_code}"
+                except Exception as e:
+                    last_error = sanitize_error(str(e))
+                    logger.warning("Webhook delivery failed for %s (attempt %s)", webhook_id, attempt + 1)
             try:
                 db.query(Webhook).filter(Webhook.id == webhook_id).update({
                     "last_triggered_at": _utcnow(),
-                    "last_status_code": None,
-                    "last_error": sanitize_error(str(e)),
+                    "last_status_code": last_status,
+                    "last_error": last_error,
                 })
                 db.commit()
             except Exception:
                 db.rollback()
+            if schedule_retry:
+                self._schedule_durable_retry(webhook_id, event, payload, last_error)
         finally:
             db.close()
+
+    def _schedule_durable_retry(self, webhook_id: str, event: str, payload: dict, error: Optional[str]) -> None:
+        try:
+            from src.job_queue import enqueue
+            enqueue(
+                "webhook_delivery",
+                payload={"webhook_id": webhook_id, "event": event, "data": payload, "error": error},
+                dedupe_key=f"webhook:{webhook_id}:{event}",
+                delay_seconds=30,
+                max_attempts=5,
+            )
+        except Exception:
+            logger.debug("Could not enqueue webhook retry", exc_info=True)
 
     async def close(self):
         # Delivery clients are per-request and closed via their async context

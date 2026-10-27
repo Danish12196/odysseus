@@ -393,6 +393,20 @@ def _clear_done_response_tags(owner: str, account_id: str | None, folder: str, u
         logger.debug(f"clear done response tags skipped: {e}")
 
 
+def _email_event_payload(account_id: str | None, folder: str, email: dict) -> dict:
+    """Fields a routine can template. Body text stays out of the event."""
+    return {
+        "account": account_id,
+        "folder": folder or "INBOX",
+        "message_id": str((email or {}).get("message_id") or "")[:300],
+        "uid": str((email or {}).get("uid") or "")[:80],
+        "subject": str((email or {}).get("subject") or "")[:500],
+        "from": str((email or {}).get("from") or (email or {}).get("from_addr") or "")[:500],
+        "date": str((email or {}).get("date") or "")[:200],
+        "snippet": str((email or {}).get("snippet") or (email or {}).get("preview") or "")[:500],
+    }
+
+
 def _record_email_received_events(owner: str, account_id: str | None, folder: str, emails: list[dict]):
     """Baseline inbox messages, then fire `email_received` for new arrivals."""
     # AUTH_ENABLED=false single-user deployments intentionally have no owner;
@@ -443,8 +457,13 @@ def _record_email_received_events(owner: str, account_id: str | None, folder: st
             conn.close()
 
         if count and new_keys:
-            for _ in new_keys[:50]:
-                fire_event("email_received", owner)
+            by_key = {}
+            for item in emails:
+                key = (item.get("message_id") or item.get("uid") or "").strip()
+                if key:
+                    by_key.setdefault(key, item)
+            for key in new_keys[:50]:
+                fire_event("email_received", owner, _email_event_payload(account_id, folder, by_key.get(key) or {}))
             logger.info("Fired email_received for %d new message(s)", min(len(new_keys), 50))
             try:
                 loop = asyncio.get_running_loop()

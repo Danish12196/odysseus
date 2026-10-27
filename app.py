@@ -671,9 +671,10 @@ async def web_search_error_handler(request: Request, exc: WebSearchError):
     return JSONResponse(status_code=502, content={"error": "WEB_SEARCH_ERROR", "message": str(exc)})
 
 # ========= WEBHOOK MANAGER =========
-from src.webhook_manager import WebhookManager
+from src.webhook_manager import WebhookManager, set_webhook_manager
 
 webhook_manager = WebhookManager(api_key_manager=api_key_manager)
+set_webhook_manager(webhook_manager)
 
 # ========= INCLUDE ROUTERS =========
 
@@ -1347,6 +1348,11 @@ async def _startup_event():
     # Start scheduled task runner — skip when running under a cron-driven
     # deployment where an external worker drives task firing. Mirrors
     # `ODYSSEUS_INPROCESS_POLLERS` from the email pollers.
+    try:
+        from src.job_queue import interrupt_orphaned_agent_runs
+        await asyncio.to_thread(interrupt_orphaned_agent_runs)
+    except Exception:
+        logger.debug("Orphaned agent-run sweep skipped", exc_info=True)
     _tasks_inprocess = os.environ.get("ODYSSEUS_INPROCESS_TASKS", "1").strip().lower()
     if _tasks_inprocess not in ("0", "false", "no", "off", ""):
         await task_scheduler.start()

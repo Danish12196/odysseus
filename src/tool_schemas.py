@@ -1907,6 +1907,21 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "handoff_background",
+            "description": "Hand a long task to the background and post the result back into this chat. Use this for work that should keep going while the user keeps chatting, or that should survive a restart. Shell jobs still use a bash block starting with #!bg. prompt is the task. Optional max_steps caps the agent loop.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "What the background task should do"},
+                    "max_steps": {"type": "integer", "description": "Optional agent-loop step cap"},
+                },
+                "required": ["prompt"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "manage_bg_jobs",
             "description": "Inspect and control detached background `bash` jobs (started with the `#!bg` marker). action='list' shows this chat's jobs with id/status/age/command; action='output' returns a job's captured output so far (use for a still-running job, or to re-read a finished one); action='kill' terminates a runaway job's process tree instead of waiting out its max-runtime. output and kill need job_id from list.",
             "parameters": {

@@ -798,7 +798,7 @@ _QWEN38_TOOL_ROUTER_PROMPT = (
     "use task_id, so list/search first when only name is known. manage_memory: saved memories. "
     "manage_contact: address-book contacts. manage_research: saved research reports. "
     "manage_settings: app settings. manage_endpoints: configured API endpoints; list_models: available models. "
-    "manage_mcp: MCP servers. manage_skills: skills. manage_webhooks: webhooks. manage_bg_jobs: running/background jobs. "
+    "manage_mcp: MCP servers. manage_skills: skills. manage_webhooks: webhooks. manage_bg_jobs: running/background shell jobs. handoff_background: hand a long non-shell task to the background and report back in this chat. "
     "search_chats: past chats. web_search: public web lookup, URLs, links; web_fetch: fetch a concrete URL/domain. "
     "private_browser: rendered site interaction; start with one batch containing open then snapshot, "
     "and only click/fill element refs returned by snapshot (for example @e12), never guessed labels. "
@@ -7151,7 +7151,7 @@ _DOMAIN_TOOL_MAP = {
     "skills": {"manage_skills"},
     "ui": {"ui_control"},
     "sessions": {"create_session", "list_sessions", "manage_session", "send_to_session", "search_chats"},
-    "files": {"bash", "python", "read_file", "write_file", "edit_file", "apply_patch", "todowrite", "grep", "glob", "ls", "get_workspace", "manage_bg_jobs"},
+    "files": {"bash", "python", "read_file", "write_file", "edit_file", "apply_patch", "todowrite", "grep", "glob", "ls", "get_workspace", "manage_bg_jobs", "handoff_background"},
     "settings": {"manage_settings", "manage_endpoints", "manage_mcp", "manage_webhooks", "manage_tokens", "app_api"},
     "contacts": {"resolve_contact", "manage_contact"},
     "integrations": {"api_call"},
@@ -7827,6 +7827,7 @@ _BACKEND_LOCAL_COMPUTER_TOOLS = {
     "ls",
     "get_workspace",
     "manage_bg_jobs",
+    "handoff_background",
 }
 
 
@@ -7901,7 +7902,7 @@ TOOL_SECTIONS = {
 Run any shell command. Output is returned to you. Use for: installing packages, checking files, git, system info, process management, etc.
 Do NOT use bash/curl for web lookup/search/latest/current requests when `web_search` or `web_fetch` is available.
 NEVER use bash to create or change files — no `>`/`>>` redirects, no heredocs (`cat > f << 'EOF'`), no `tee`, `sed -i`, `awk -i`, no `python -c` that writes. To CREATE a new file or deliberately provide its COMPLETE replacement use `write_file`; to change part of an existing file use `edit_file` or `apply_patch`. Never send a partial file to `write_file`, because it can discard unrelated existing code. Those tools show a diff and are the ONLY allowed way to write files. (bash is for read-only inspection: `ls`, `cat` to READ, `grep`, `git status`/`git diff`, builds, installs.)
-For LONG-running commands (package installs, pip/npm, ffmpeg, model downloads, training, builds — anything that may take more than ~20s), make the FIRST line `#!bg` to run it in the BACKGROUND. You get a job id back immediately and are automatically re-invoked with the full output when it finishes — so you never block the chat waiting. Example:
+For LONG-running commands (package installs, pip/npm, ffmpeg, model downloads, training, builds — anything that may take more than ~20s), make the FIRST line `#!bg` to run it in the BACKGROUND. You get a job id back immediately and are automatically re-invoked with the full output when it finishes — so you never block the chat waiting. For a long task that is not a shell command, call `handoff_background` instead; its result is posted back into this chat. Example:
 ```bash
 #!bg
 pip install openai-whisper
@@ -11004,7 +11005,8 @@ def _classify_agent_request(messages: List[Dict], last_user: str) -> Dict[str, o
     # "kill that job", "check the job output", "is the bg job done".
     if (has(r"\b(background|bg)\s+(jobs?|task)\b")
             or has(r"\b(kill|stop|cancel|terminate|check|tail|show|list)\b.{0,16}\bjobs?\b")
-            or has(r"\bjobs?\b.{0,16}\b(output|status|done|finished|running)\b")):
+            or has(r"\bjobs?\b.{0,16}\b(output|status|done|finished|running)\b")
+            or has(r"\bhand[\s-]?off\b")):
         domains.add("files")
     if (
         has(r"\b(endpoint|api token|mcp|webhook)\b")
@@ -22917,6 +22919,7 @@ async def stream_agent_loop(
         # workspace tools are confined to the runner's isolated task sandbox.
         _native_workspace_tools = set(_BACKEND_LOCAL_COMPUTER_TOOLS)
         _native_workspace_tools.add("manage_bg_jobs")
+        _native_workspace_tools.add("handoff_background")
         _native_reenabled_tools = set(_native_workspace_tools) - _caller_hard_denials
         public_blocked_tools.difference_update(_native_reenabled_tools)
         disabled_tools.difference_update(_native_reenabled_tools)
